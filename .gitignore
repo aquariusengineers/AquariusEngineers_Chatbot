@@ -1,0 +1,103 @@
+# ========================================
+# AQUARIUS AI ASSISTANT - GIT IGNORE
+# ========================================
+
+# ============= SENSITIVE DATA =============
+# Never commit these!
+.env
+*.env
+.env.local
+.env.production
+config_local.py
+
+# API Keys and Secrets
+secrets.toml
+.streamlit/secrets.toml
+
+# ============= DATA FILES =============
+# Cached processed data
+data_cache.pkl
+*.pkl
+*.pickle
+
+# Query logs
+query_log.json
+*.log
+
+# ============= PYTHON =============
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ============= IDEs =============
+# VS Code
+.vscode/
+*.code-workspace
+
+# ============= OS =============
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ============= TEMPORARY FILES =============
+# Temp files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+*.log
+
+# ============= STREAMLIT =============
+# Streamlit cache
+.streamlit/
+
+# ============= BACKUP FILES =============
+# Backups
+*.bak
+*.backup
+backup/
+
+# ============= NOTES =============
+# What gets committed:
+# ✅ app.py (main application)
+# ✅ config.py (configuration template)
+# ✅ requirements.txt (dependencies)
+# ✅ README.md, guides, documentation
+# ✅ .env.example (template only)
+# ✅ .gitignore (this file)
+#
+# What stays local:
+# ❌ .env (your actual API key)
+# ❌ data_cache.pkl (processed data)
+# ❌ query_log.json (usage logs)
+# ❌ product_pdfs/ (optional - can commit if small)
