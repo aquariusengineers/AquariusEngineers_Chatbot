@@ -5,7 +5,7 @@
 
 # ============= API CONFIGURATION =============
 # Get your free API key from: https://makersuite.google.com/app/apikey
-GEMINI_API_KEY = "AIzaSyCo2tOwRAqPbQvzTljGOaPAHg9p9uk4zKA"  # Replace with your actual key
+GEMINI_API_KEY = "AIzaSyBdVTztCMrPiqB01vHZZOrME19Cjk4H9EM"  # Replace with your actual key
 
 # ============= FILE PATHS =============
 # Folder containing your product PDF files

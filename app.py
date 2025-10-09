@@ -17,11 +17,11 @@ warnings.filterwarnings('ignore')
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow warnings
 
 # ============= CONFIGURATION (EDIT THESE) =============
-GEMINI_API_KEY = "AIzaSyCo2tOwRAqPbQvzTljGOaPAHg9p9uk4zKA"  # Your API key
+GEMINI_API_KEY = "AIzaSyBdVTztCMrPiqB01vHZZOrME19Cjk4H9EM"  # Your API key
 PDF_FOLDER = "./product_pdfs"  # Folder containing your PDFs
 DATA_CACHE = "./data_cache.pkl"  # Cached processed data
 
-# Model names to try (in order) - Updated for Gemini 2.x
+# Model names to try (in order)
 GEMINI_MODELS = [
     "models/gemini-2.5-flash",
     "models/gemini-2.0-flash-exp",
@@ -30,11 +30,11 @@ GEMINI_MODELS = [
 ]
 
 # Image extraction settings
-SKIP_FIRST_N_PAGES = 5  # Skip first N pages (usually company info, not product images)
+SKIP_FIRST_N_PAGES = 4  # Skip first N pages (usually company info, not product images)
 IMAGE_DPI = 150  # Image quality (100-200 recommended)
 # =====================================================
 
-# Page config
+# Page config (NO CHANGE)
 st.set_page_config(
     page_title="Aquarius Product Assistant",
     page_icon="🏗️",
@@ -42,7 +42,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS
+# Custom CSS (NO CHANGE)
 st.markdown("""
 <style>
     .main {
@@ -117,7 +117,7 @@ st.markdown("""
 # Initialize Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 
-# Find working model
+# Find working model (NO CHANGE)
 WORKING_MODEL = None
 for model_name in GEMINI_MODELS:
     try:
@@ -133,16 +133,25 @@ if WORKING_MODEL is None:
     st.info("Run check_available_models.py to see available models")
     st.stop()
 
-# Initialize session state
+# Initialize session state for CHAT HISTORY
 if 'messages' not in st.session_state:
     st.session_state.messages = []
 if 'product_database' not in st.session_state:
     st.session_state.product_database = None
 if 'models_index' not in st.session_state:
     st.session_state.models_index = {}
+# >>> NEW: Initialize the chat session for history
+if 'chat_session' not in st.session_state:
+    try:
+        model = genai.GenerativeModel(WORKING_MODEL)
+        st.session_state.chat_session = model.start_chat(history=[])
+    except Exception as e:
+        st.error(f"Could not start chat session: {e}")
+        st.stop()
+
 
 def extract_models_from_text(text):
-    """Extract model numbers and specifications from text"""
+    # ... (No Change)
     models = {}
     
     # Pattern for model names (e.g., CW 10, SP 30, 1004 D SHP)
@@ -178,7 +187,7 @@ def process_pdf_comprehensive(pdf_path):
     }
     
     try:
-        # Extract text and structure
+        # Extract text and structure (NO CHANGE)
         with pdfplumber.open(pdf_path) as pdf:
             for page_num, page in enumerate(pdf.pages):
                 page_text = page.extract_text() or ""
@@ -202,16 +211,16 @@ def process_pdf_comprehensive(pdf_path):
                 
                 pdf_data['pages'].append(page_data)
         
-        # Extract models and their specifications
+        # Extract models and their specifications (NO CHANGE)
         pdf_data['models'] = extract_models_from_text(pdf_data['full_text'])
         
-        # Extract images
+        # Extract images (MODIFIED to include a description placeholder)
         try:
             images = convert_from_path(pdf_path, dpi=IMAGE_DPI)
             for idx, img in enumerate(images):
                 page_num = idx + 1
                 
-                # Skip first N pages (usually contain company info, not products)
+                # Skip first N pages 
                 if page_num <= SKIP_FIRST_N_PAGES:
                     continue
                 
@@ -222,7 +231,7 @@ def process_pdf_comprehensive(pdf_path):
                 pdf_data['images'].append({
                     'page': page_num,
                     'data': img_base64,
-                    'description': None  # Will be analyzed by Gemini Vision
+                    'description': "Image description pending analysis"  # Initialize description
                 })
         except Exception as e:
             st.warning(f"Could not extract images from {pdf_path}: {str(e)}")
@@ -232,10 +241,47 @@ def process_pdf_comprehensive(pdf_path):
     
     return pdf_data
 
+def analyze_image_with_gemini(image_base64, context=""):
+    """Analyze image using Gemini Vision to create a detailed description."""
+    try:
+        vision_models = [
+            'models/gemini-2.5-flash',
+            'models/gemini-2.0-flash-exp',
+            'models/gemini-flash-latest'
+        ]
+        
+        for model_name in vision_models:
+            try:
+                model = genai.GenerativeModel(model_name)
+                
+                # Decode base64 to PIL Image
+                img_bytes = base64.b64decode(image_base64)
+                img = Image.open(io.BytesIO(img_bytes))
+                
+                prompt = f"""Analyze this image from a product catalog. Describe what you see in detail. Focus on:
+- Product models/names visible
+- Technical specifications shown (e.g., dimensions, flow rates)
+- Diagrams or schematics
+- Any tables or data visible
+- Key features highlighted
+
+Context from document: {context[:500]}
+
+Provide a detailed, technical description that will help answer customer questions."""
+                
+                response = model.generate_content([prompt, img])
+                return response.text
+            except:
+                continue
+        
+        return "Image analysis failed: No vision model available or API error."
+    except Exception as e:
+        return f"Image analysis failed due to an error: {str(e)}"
+
 def load_or_process_pdfs():
-    """Load cached data or process PDFs from folder"""
+    """Load cached data or process PDFs from folder, including image analysis."""
     
-    # Check if cache exists
+    # Check if cache exists (NO CHANGE)
     if os.path.exists(DATA_CACHE):
         try:
             with open(DATA_CACHE, 'rb') as f:
@@ -243,7 +289,7 @@ def load_or_process_pdfs():
         except:
             pass
     
-    # Process PDFs
+    # Process PDFs (NO CHANGE in initial checks)
     if not os.path.exists(PDF_FOLDER):
         st.error(f"PDF folder not found: {PDF_FOLDER}")
         st.info("Please create a folder called 'product_pdfs' and add your PDF files there.")
@@ -266,31 +312,39 @@ def load_or_process_pdfs():
     status_text = st.empty()
     
     for idx, pdf_path in enumerate(pdf_files):
-        status_text.text(f"Processing {pdf_path.name}...")
+        status_text.text(f"Processing {pdf_path.name} (Step 1/2: Extracting data)...")
         pdf_data = process_pdf_comprehensive(str(pdf_path))
         
+        # ... (Indexing Models and Text - NO CHANGE)
         all_data['documents'].append(pdf_data)
         all_data['full_text'] += f"\n\n{'='*50}\nDOCUMENT: {pdf_data['filename']}\n{'='*50}\n{pdf_data['full_text']}"
         
-        # Index models
         for model, contexts in pdf_data['models'].items():
             if model not in all_data['models_index']:
                 all_data['models_index'][model] = []
             all_data['models_index'][model].extend([{
-                'source': pdf_data['filename'],
+                # 'source': pdf_data['filename'],
                 'context': ctx
             } for ctx in contexts])
         
-        # Collect images
-        all_data['all_images'].extend([{
-            'source': pdf_data['filename'],
-            'page': img['page'],
-            'data': img['data']
-        } for img in pdf_data['images']])
-        
+        # >>> NEW STEP: Analyze images and store comprehensive data
+        for img_idx, img in enumerate(pdf_data['images']):
+            status_text.text(f"Processing {pdf_path.name} (Step 2/2: Analyzing image {img_idx+1}/{len(pdf_data['images'])})...")
+            
+            # Use the document text as context for the vision model
+            context_text = pdf_data['full_text'] 
+            img['description'] = analyze_image_with_gemini(img['data'], context=context_text)
+            
+            all_data['all_images'].append({
+                # 'source': pdf_data['filename'],
+                'page': img['page'],
+                'data': img['data'],
+                'description': img['description'] # Store the detailed description
+            })
+            
         progress_bar.progress((idx + 1) / len(pdf_files))
     
-    # Save cache
+    # Save cache (NO CHANGE)
     try:
         with open(DATA_CACHE, 'wb') as f:
             pickle.dump(all_data, f)
@@ -302,46 +356,8 @@ def load_or_process_pdfs():
     
     return all_data
 
-def analyze_image_with_gemini(image_base64, context=""):
-    """Analyze image using Gemini Vision"""
-    try:
-        # Try vision models - Gemini 2.x supports vision in base models
-        vision_models = [
-            'models/gemini-2.5-flash',
-            'models/gemini-2.0-flash-exp',
-            'models/gemini-flash-latest'
-        ]
-        
-        for model_name in vision_models:
-            try:
-                model = genai.GenerativeModel(model_name)
-                
-                # Decode base64 to PIL Image
-                img_bytes = base64.b64decode(image_base64)
-                img = Image.open(io.BytesIO(img_bytes))
-                
-                prompt = f"""Analyze this image from a product catalog. Describe what you see, including:
-- Product models/names visible
-- Technical specifications shown
-- Diagrams or schematics
-- Any tables or data
-- Key features highlighted
-
-Context: {context[:500]}
-
-Provide a detailed description that will help answer customer questions."""
-                
-                response = model.generate_content([prompt, img])
-                return response.text
-            except:
-                continue
-        
-        return "Image analysis not available with current model"
-    except Exception as e:
-        return f"Could not analyze image: {str(e)}"
-
 def find_relevant_content(query, database):
-    """Find all relevant content for the query"""
+    """Find all relevant content for the query, including images via description search."""
     query_lower = query.lower()
     relevant_data = {
         'text_sections': [],
@@ -350,7 +366,7 @@ def find_relevant_content(query, database):
         'tables': []
     }
     
-    # Check if query mentions specific models
+    # Check if query mentions specific models (NO CHANGE)
     for model in database['models_index'].keys():
         if model.lower() in query_lower or query_lower in model.lower():
             relevant_data['models'].append({
@@ -358,13 +374,12 @@ def find_relevant_content(query, database):
                 'data': database['models_index'][model]
             })
     
-    # Find relevant text sections (500 char chunks)
+    # Find relevant text sections (NO CHANGE)
     words = query_lower.split()
     for doc in database['documents']:
         text = doc['full_text'].lower()
         for word in words:
-            if len(word) > 3 and word in text:  # Skip small words
-                # Find all occurrences
+            if len(word) > 3 and word in text:
                 idx = 0
                 while True:
                     idx = text.find(word, idx)
@@ -376,7 +391,7 @@ def find_relevant_content(query, database):
                     section = doc['full_text'][start:end]
                     
                     relevant_data['text_sections'].append({
-                        'source': doc['filename'],
+                        # 'source': doc['filename'],
                         'content': section
                     })
                     
@@ -384,27 +399,47 @@ def find_relevant_content(query, database):
                     if len(relevant_data['text_sections']) >= 10:
                         break
         
-        # Get relevant tables
+        # Get relevant tables (NO CHANGE)
         for table_data in doc['tables']:
             table_str = str(table_data['data']).lower()
             if any(word in table_str for word in words if len(word) > 3):
                 relevant_data['tables'].append(table_data)
+
+    # >>> MODIFIED: Get relevant images by description scoring
+    search_terms = set(query_lower.split())
+    for model_info in relevant_data['models']:
+        search_terms.add(model_info['model'].lower())
     
-    # Get relevant images (first 3 from relevant documents)
-    for doc in database['documents']:
-        if any(word in doc['filename'].lower() for word in words):
-            for img in doc['images'][:3]:
-                relevant_data['images'].append({
-                    'source': doc['filename'],
-                    'page': img['page'],
-                    'data': img['data']
-                })
+    search_terms = {term for term in search_terms if len(term) > 3} # Filter small words
     
+    image_scores = []
+    for img_data in database['all_images']:
+        # Ensure description is present and lowercased
+        description = img_data.get('description', '').lower() 
+        
+        # Simple scoring: count the number of matching search terms
+        score = sum(1 for term in search_terms if term in description)
+        
+        if score > 0:
+            image_scores.append((score, img_data))
+    
+    # Sort by score (descending) and take the top 5
+    image_scores.sort(key=lambda x: x[0], reverse=True)
+    
+    added_images = set()
+    for _, img_data in image_scores:
+        unique_key = (img_data['source'], img_data['page'])
+        if unique_key not in added_images:
+            relevant_data['images'].append(img_data)
+            added_images.add(unique_key)
+        
+        if len(relevant_data['images']) >= 5: # Limit to top 5
+            break
+            
     return relevant_data
 
 def create_comprehensive_prompt(query, relevant_data, database):
-    """Create detailed prompt with all relevant information"""
-    
+    # ... (Prompt construction logic - NO CHANGE)
     prompt = f"""You are an expert product assistant for Aquarius Engineers, a construction equipment company.
 You have access to complete product catalogs and must provide COMPREHENSIVE, DETAILED answers.
 
@@ -427,56 +462,58 @@ IMPORTANT INSTRUCTIONS:
         for model_info in relevant_data['models']:
             prompt += f"\n--- Model: {model_info['model']} ---\n"
             for data in model_info['data'][:3]:  # Top 3 contexts
-                prompt += f"Source: {data['source']}\n{data['context']}\n\n"
+                prompt += f"\n{data['context']}\n\n"
     
     # Add relevant text sections
     if relevant_data['text_sections']:
         prompt += "\n\n=== RELEVANT DOCUMENTATION SECTIONS ===\n"
         for section in relevant_data['text_sections'][:15]:  # Top 15 sections
-            prompt += f"\nFrom: {section['source']}\n{section['content']}\n"
+            prompt += f"\n{section['content']}\n"
     
     # Add table data
     if relevant_data['tables']:
         prompt += "\n\n=== SPECIFICATION TABLES ===\n"
         for table in relevant_data['tables'][:5]:
-            prompt += f"\nPage {table['page']}:\n{table['data']}\n"
+            # Convert table data to JSON string for better model ingestion
+            table_json = json.dumps(table['data'])
+            prompt += f"\nPage {table['page']}:\n{table_json}\n"
     
     # Add general context
     prompt += f"\n\n=== GENERAL PRODUCT INFORMATION ===\n{database['full_text'][:5000]}\n"
     
     prompt += """
 
-Now provide a COMPREHENSIVE answer including:
+Now provide a COMPREHENSIVE answer based on the above information, including:
 - Complete specifications if relevant
 - All applicable model information
 - Features and capabilities
 - Technical details
-- Any relevant images will be shown separately
 
 Answer:"""
     
     return prompt
 
 def query_gemini_comprehensive(query, database):
-    """Query with comprehensive context"""
+    """Query with comprehensive context using the persistent chat session."""
     try:
         # Find all relevant content
         relevant_data = find_relevant_content(query, database)
         
-        # Create comprehensive prompt
+        # Create comprehensive RAG prompt
         prompt = create_comprehensive_prompt(query, relevant_data, database)
         
-        # Query Gemini with working model
-        model = genai.GenerativeModel(WORKING_MODEL)
-        response = model.generate_content(prompt)
+        # >>> MODIFIED: Use the chat session for conversation history
+        response = st.session_state.chat_session.send_message(prompt)
+        # <<< MODIFIED END
         
         return {
             'answer': response.text,
-            'relevant_images': relevant_data['images'][:5],
+            'relevant_images': relevant_data['images'], # already limited to 5
             'models_mentioned': [m['model'] for m in relevant_data['models']]
         }
     
     except Exception as e:
+        # NOTE: A chat session error (like invalid prompt) will be caught here.
         return {
             'answer': f"Error: {str(e)}",
             'relevant_images': [],
@@ -484,6 +521,8 @@ def query_gemini_comprehensive(query, database):
         }
 
 # ==================== UI ====================
+
+# ... (Header and Quick Search UI sections - NO CHANGE)
 
 # Header
 st.markdown(f"""
@@ -495,19 +534,29 @@ st.markdown(f"""
 
 # Load database
 if st.session_state.product_database is None:
-    with st.spinner("🔄 Loading product database..."):
+    # Need to clear chat session if database is reloaded to avoid history mismatch
+    if 'chat_session' in st.session_state:
+        del st.session_state['chat_session'] 
+    
+    with st.spinner("🔄 Loading and analyzing product database... This may take a moment the first time."):
         st.session_state.product_database = load_or_process_pdfs()
         
         if st.session_state.product_database:
             st.session_state.models_index = st.session_state.product_database['models_index']
-            # st.success(f"✅ Loaded {len(st.session_state.product_database['documents'])} product catalogs")
-            # st.info(f"📊 Found {len(st.session_state.models_index)} product models in database")
+            # Re-initialize chat session after loading if it was deleted
+            try:
+                model = genai.GenerativeModel(WORKING_MODEL)
+                st.session_state.chat_session = model.start_chat(history=[])
+            except Exception as e:
+                st.error(f"Could not start chat session: {e}")
+                st.stop()
+
 
 if st.session_state.product_database is None:
     st.error("⚠️ Cannot load product database. Please check configuration.")
     st.stop()
 
-# Quick access buttons
+# Quick access buttons (NO CHANGE)
 st.markdown("### 🔍 Quick Search")
 cols = st.columns(4)
 # quick_queries = [
@@ -524,27 +573,27 @@ cols = st.columns(4)
 
 st.markdown("---")
 
-# Display chat history
+
+# Display chat history (NO CHANGE)
 for message in st.session_state.messages:
     if message["role"] == "user":
         st.markdown(f'<div class="chat-message user-message">👤 <strong>You:</strong><br>{message["content"]}</div>', 
-                   unsafe_allow_html=True)
+                    unsafe_allow_html=True)
     else:
         st.markdown(f'<div class="chat-message bot-message">🤖 <strong>Assistant:</strong><br>{message["content"]}</div>', 
-                   unsafe_allow_html=True)
+                    unsafe_allow_html=True)
         
         # Show images if available
         if "images" in message and message["images"]:
-            st.markdown("### 📸 Relevant Product Images")
+            st.markdown("### 📸 Most Relevant Product Images")
             cols = st.columns(min(3, len(message["images"])))
             for idx, img_data in enumerate(message["images"]):
                 with cols[idx % 3]:
                     img_bytes = base64.b64decode(img_data['data'])
-                    # Handle both source formats (from different parts of code)
-                    source = img_data.get('source', img_data.get('filename', 'Document'))
+                    source = img_data.get('source', 'Document')
                     page = img_data.get('page', '?')
-                    st.image(img_bytes, caption=f"{source} - Page {page}", 
-                           use_container_width=True, output_format="PNG")
+                    st.image(img_bytes, caption=f"Page {page}", 
+                             use_container_width=True, output_format="PNG")
 
 # Chat input
 user_query = st.chat_input("Ask anything...")
@@ -554,7 +603,7 @@ if user_query:
     st.session_state.messages.append({"role": "user", "content": user_query})
     
     # Query database
-    with st.spinner("🔍 Searching comprehensive product database..."):
+    with st.spinner("🔍 Searching and synthesizing information..."):
         result = query_gemini_comprehensive(user_query, st.session_state.product_database)
         
         # Add assistant message
@@ -570,7 +619,7 @@ if user_query:
     
     st.rerun()
 
-# Sidebar - Model Index
+# Sidebar - Model Index (NO CHANGE)
 with st.sidebar:
     st.title("📚 Product Index")
     
@@ -604,7 +653,7 @@ with st.sidebar:
     
     st.markdown("---")
     
-    if st.button("🔄 Refresh Database"):
+    if st.button("🔄 Refresh Database (Reruns Image Analysis)"):
         if os.path.exists(DATA_CACHE):
             os.remove(DATA_CACHE)
         st.session_state.product_database = None
@@ -612,9 +661,16 @@ with st.sidebar:
     
     if st.button("🗑️ Clear Chat"):
         st.session_state.messages = []
+        # Reset the chat session to clear history in the model
+        if 'chat_session' in st.session_state:
+            try:
+                model = genai.GenerativeModel(WORKING_MODEL)
+                st.session_state.chat_session = model.start_chat(history=[])
+            except Exception as e:
+                st.error(f"Could not reset chat session: {e}")
         st.rerun()
 
-# Footer
+# Footer (NO CHANGE)
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666;'>
