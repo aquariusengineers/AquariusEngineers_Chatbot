@@ -17,7 +17,7 @@ warnings.filterwarnings('ignore')
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow warnings
 
 # ============= CONFIGURATION (EDIT THESE) =============
-GEMINI_API_KEY = "AIzaSyBdVTztCMrPiqB01vHZZOrME19Cjk4H9EM"  # Your API key
+GEMINI_API_KEY = "AIzaSyCo2tOwRAqPbQvzTljGOaPAHg9p9uk4zKA"  # Your API key
 PDF_FOLDER = "./product_pdfs"  # Folder containing your PDFs
 DATA_CACHE = "./data_cache.pkl"  # Cached processed data
 

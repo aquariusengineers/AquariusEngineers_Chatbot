@@ -4,7 +4,7 @@ Quick test with your API key
 import google.generativeai as genai
 
 # Your API key
-API_KEY = "AIzaSyBdVTztCMrPiqB01vHZZOrME19Cjk4H9EM"
+API_KEY = "AIzaSyCo2tOwRAqPbQvzTljGOaPAHg9p9uk4zKA"
 
 print("Testing Gemini API...")
 print("=" * 60)
