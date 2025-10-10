@@ -385,7 +385,7 @@ def load_or_process_pdfs():
             if model not in all_data['models_index']:
                 all_data['models_index'][model] = []
             all_data['models_index'][model].extend([{
-                # 'source': pdf_data['filename'],
+                'source': pdf_data['filename'],
                 'context': ctx
             } for ctx in contexts])
         
@@ -398,7 +398,7 @@ def load_or_process_pdfs():
             img['description'] = analyze_image_with_gemini(img['data'], context=context_text)
             
             all_data['all_images'].append({
-                # 'source': pdf_data['filename'],
+                'source': pdf_data['filename'],
                 'page': img['page'],
                 'data': img['data'],
                 'description': img['description'] # Store the detailed description
@@ -453,7 +453,7 @@ def find_relevant_content(query, database):
                     section = doc['full_text'][start:end]
                     
                     relevant_data['text_sections'].append({
-                        # 'source': doc['filename'],
+                        'source': doc['filename'],
                         'content': section
                     })
                     
