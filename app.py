@@ -11,6 +11,7 @@ import pdfplumber
 from pdf2image import convert_from_path
 import pickle
 import warnings
+from typing import Optional, Dict, Any
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
@@ -20,6 +21,14 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow warnings
 GEMINI_API_KEY = "AIzaSyBdVTztCMrPiqB01vHZZOrME19Cjk4H9EM"  # Your API key
 PDF_FOLDER = "./product_pdfs"  # Folder containing your PDFs
 DATA_CACHE = "./data_cache.pkl"  # Cached processed data
+
+# --- NEW: AUTHENTICATION CONFIG ---
+# WARNING: This is for demonstration. For production, use a secure service like OAuth/JWT.
+CREDENTIALS = {
+    "admin": "Aepl@123", # Replace with actual secure credentials
+    "user": "Aepl@123"
+}
+# --- END NEW: AUTHENTICATION CONFIG ---
 
 # Model names to try (in order)
 GEMINI_MODELS = [
@@ -114,40 +123,92 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-
-# Find working model (NO CHANGE)
-WORKING_MODEL = None
-for model_name in GEMINI_MODELS:
-    try:
-        test_model = genai.GenerativeModel(model_name)
-        test_model.generate_content("test")
-        WORKING_MODEL = model_name
-        break
-    except:
-        continue
-
-if WORKING_MODEL is None:
-    st.error("❌ Could not find a working Gemini model. Please check your API key.")
-    st.info("Run check_available_models.py to see available models")
-    st.stop()
-
-# Initialize session state for CHAT HISTORY
+# Initialize Streamlit session state for AUTHENTICATION and CHAT
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+if 'username' not in st.session_state:
+    st.session_state.username = None
 if 'messages' not in st.session_state:
     st.session_state.messages = []
 if 'product_database' not in st.session_state:
     st.session_state.product_database = None
 if 'models_index' not in st.session_state:
     st.session_state.models_index = {}
-# >>> NEW: Initialize the chat session for history
 if 'chat_session' not in st.session_state:
+    st.session_state.chat_session = None
+if 'working_model' not in st.session_state:
+    st.session_state.working_model = None
+
+
+# Initialize Gemini
+genai.configure(api_key=GEMINI_API_KEY)
+
+# --- AUTHENTICATION FUNCTIONS ---
+
+def authenticate_user(username: str, password: str) -> bool:
+    """Checks credentials and sets session state if successful."""
+    if username in CREDENTIALS and CREDENTIALS[username] == password:
+        st.session_state.authenticated = True
+        st.session_state.username = username
+        return True
+    st.session_state.authenticated = False
+    st.session_state.username = None
+    return False
+
+def login_form():
+    """Renders the login form."""
+    st.title("🔒 Login to Product Assistant")
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submit_button = st.form_submit_button("Login")
+
+        if submit_button:
+            if authenticate_user(username, password):
+                st.success("Login successful!")
+                st.rerun() 
+            else:
+                st.error("Invalid username or password")
+    st.stop()
+    
+def logout():
+    """Clears authentication and session-specific data."""
+    for key in ['authenticated', 'username', 'messages', 'product_database', 'models_index', 'chat_session']:
+        if key in st.session_state:
+            del st.session_state[key]
+    st.rerun() 
+
+# --- GEMINI INIT (Ensures this only runs once) ---
+
+def initialize_gemini():
+    """Find working model and initialize chat session."""
+    if st.session_state.working_model is not None and st.session_state.chat_session is not None:
+        return
+        
+    WORKING_MODEL = None
+    for model_name in GEMINI_MODELS:
+        try:
+            test_model = genai.GenerativeModel(model_name)
+            test_model.generate_content("test")
+            WORKING_MODEL = model_name
+            break
+        except:
+            continue
+
+    if WORKING_MODEL is None:
+        st.error("❌ Could not find a working Gemini model. Please check your API key.")
+        st.stop()
+        
+    st.session_state.working_model = WORKING_MODEL
+    
     try:
         model = genai.GenerativeModel(WORKING_MODEL)
         st.session_state.chat_session = model.start_chat(history=[])
     except Exception as e:
         st.error(f"Could not start chat session: {e}")
         st.stop()
+        
+# --- END GEMINI INIT ---
 
 
 def extract_models_from_text(text):
@@ -520,43 +581,45 @@ def query_gemini_comprehensive(query, database):
             'models_mentioned': []
         }
 
-# ==================== UI ====================
+# ==================== MAIN APPLICATION LOGIC ====================
 
-# ... (Header and Quick Search UI sections - NO CHANGE)
+if not st.session_state.authenticated:
+    login_form()
+
+# --- Everything below this line runs only if authenticated ---
+initialize_gemini()
 
 # Header
 st.markdown(f"""
 <div class="header-banner">
     <h1>🏗️ Aquarius Product Assistant</h1>
-    <p>Your comprehensive guide to Aquarius construction equipment</p>
+    <p>Logged in as: <strong>{st.session_state.username}</strong> | Your comprehensive guide to Aquarius construction equipment</p>
 </div>
 """, unsafe_allow_html=True)
 
 # Load database
 if st.session_state.product_database is None:
-    # Need to clear chat session if database is reloaded to avoid history mismatch
+    # Need to clear chat session history if database is reloaded
     if 'chat_session' in st.session_state:
-        del st.session_state['chat_session'] 
+        try:
+            model = genai.GenerativeModel(st.session_state.working_model)
+            st.session_state.chat_session = model.start_chat(history=[])
+        except Exception as e:
+            st.error(f"Could not reset chat session during database load: {e}")
+            st.stop()
     
     with st.spinner("🔄 Loading and analyzing product database... This may take a moment the first time."):
         st.session_state.product_database = load_or_process_pdfs()
         
         if st.session_state.product_database:
             st.session_state.models_index = st.session_state.product_database['models_index']
-            # Re-initialize chat session after loading if it was deleted
-            try:
-                model = genai.GenerativeModel(WORKING_MODEL)
-                st.session_state.chat_session = model.start_chat(history=[])
-            except Exception as e:
-                st.error(f"Could not start chat session: {e}")
-                st.stop()
 
 
 if st.session_state.product_database is None:
     st.error("⚠️ Cannot load product database. Please check configuration.")
     st.stop()
 
-# Quick access buttons (NO CHANGE)
+# Quick access buttons
 st.markdown("### 🔍 Quick Search")
 cols = st.columns(4)
 # quick_queries = [
@@ -574,7 +637,7 @@ cols = st.columns(4)
 st.markdown("---")
 
 
-# Display chat history (NO CHANGE)
+# Display chat history
 for message in st.session_state.messages:
     if message["role"] == "user":
         st.markdown(f'<div class="chat-message user-message">👤 <strong>You:</strong><br>{message["content"]}</div>', 
@@ -586,14 +649,14 @@ for message in st.session_state.messages:
         # Show images if available
         if "images" in message and message["images"]:
             st.markdown("### 📸 Most Relevant Product Images")
+            # Limit to 3 columns for display
             cols = st.columns(min(3, len(message["images"])))
             for idx, img_data in enumerate(message["images"]):
                 with cols[idx % 3]:
                     img_bytes = base64.b64decode(img_data['data'])
-                    source = img_data.get('source', 'Document')
                     page = img_data.get('page', '?')
                     st.image(img_bytes, caption=f"Page {page}", 
-                             use_container_width=True, output_format="PNG")
+                              use_container_width=True, output_format="PNG")
 
 # Chat input
 user_query = st.chat_input("Ask anything...")
@@ -619,9 +682,10 @@ if user_query:
     
     st.rerun()
 
-# Sidebar - Model Index (NO CHANGE)
+# Sidebar - Model Index
 with st.sidebar:
     st.title("📚 Product Index")
+    st.markdown("---")
     
     if st.session_state.models_index:
         st.markdown(f"**{len(st.session_state.models_index)} Models Available**")
@@ -664,13 +728,18 @@ with st.sidebar:
         # Reset the chat session to clear history in the model
         if 'chat_session' in st.session_state:
             try:
-                model = genai.GenerativeModel(WORKING_MODEL)
+                model = genai.GenerativeModel(st.session_state.working_model)
                 st.session_state.chat_session = model.start_chat(history=[])
             except Exception as e:
                 st.error(f"Could not reset chat session: {e}")
         st.rerun()
+        
+    st.markdown("---")
+    
+    if st.button("➡️ Logout"):
+        logout()
 
-# Footer (NO CHANGE)
+# Footer
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666;'>
