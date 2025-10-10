@@ -100,7 +100,7 @@ def validate_config():
     """Validate configuration settings"""
     errors = []
     
-    if GEMINI_API_KEY == "AIzaSyCo2tOwRAqPbQvzTljGOaPAHg9p9uk4zKA":
+    if GEMINI_API_KEY == st.secrets["external_api"]["api_key"] :
         errors.append("❌ Please set your GEMINI_API_KEY")
     
     if not PDF_FOLDER:
