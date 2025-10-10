@@ -18,7 +18,7 @@ warnings.filterwarnings('ignore')
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow warnings
 
 # ============= CONFIGURATION (EDIT THESE) =============
-GEMINI_API_KEY = "AIzaSyBdVTztCMrPiqB01vHZZOrME19Cjk4H9EM"  # Your API key
+GEMINI_API_KEY = st.secrets["external_api"]["api_key"]  # Your API key
 PDF_FOLDER = "./product_pdfs"  # Folder containing your PDFs
 DATA_CACHE = "./data_cache.pkl"  # Cached processed data
 
@@ -157,18 +157,25 @@ def authenticate_user(username: str, password: str) -> bool:
 
 def login_form():
     """Renders the login form."""
-    st.title("🔒 Login to Product Assistant")
-    with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submit_button = st.form_submit_button("Login")
 
-        if submit_button:
-            if authenticate_user(username, password):
-                st.success("Login successful!")
-                st.rerun() 
-            else:
-                st.error("Invalid username or password")
+    # Create columns: an empty column on the left, a column for the form, an empty column on the right
+    # The numbers [1, 2, 1] mean the middle column will be 2 units wide,
+    # and the side columns 1 unit each, making the form take up 50% of the available width.
+    col1, col2, col3 = st.columns([1, 2, 1]) 
+
+    with col2: # Place the form inside the middle column
+        st.title("🔒 Login to Product Assistant")
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submit_button = st.form_submit_button("Login")
+
+            if submit_button:
+                if authenticate_user(username, password):
+                    st.success("Login successful!")
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password")
     st.stop()
     
 def logout():
@@ -593,7 +600,7 @@ initialize_gemini()
 st.markdown(f"""
 <div class="header-banner">
     <h1>🏗️ Aquarius Product Assistant</h1>
-    <p>Logged in as: <strong>{st.session_state.username}</strong> | Your comprehensive guide to Aquarius construction equipment</p>
+    <p>Your comprehensive guide to Aquarius construction equipment</p>
 </div>
 """, unsafe_allow_html=True)
 
