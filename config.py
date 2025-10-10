@@ -5,6 +5,8 @@
 
 # ============= API CONFIGURATION =============
 # Get your free API key from: https://makersuite.google.com/app/apikey
+import streamlit as st
+
 GEMINI_API_KEY = st.secrets["external_api"]["api_key"] # Replace with your actual key
 
 # ============= FILE PATHS =============

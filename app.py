@@ -21,14 +21,8 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow warnings
 GEMINI_API_KEY = st.secrets["external_api"]["api_key"]  # Your API key
 PDF_FOLDER = "./product_pdfs"  # Folder containing your PDFs
 DATA_CACHE = "./data_cache.pkl"  # Cached processed data
-
-# --- NEW: AUTHENTICATION CONFIG ---
-# WARNING: This is for demonstration. For production, use a secure service like OAuth/JWT.
-CREDENTIALS = {
-    "admin": "Aepl@123", # Replace with actual secure credentials
-    "user": "Aepl@123"
-}
-# --- END NEW: AUTHENTICATION CONFIG ---
+CONFIG_USERNAME = st.secrets["app_credentials"]["username"]
+CONFIG_PASSWORD = st.secrets["app_credentials"]["password"]
 
 # Model names to try (in order)
 GEMINI_MODELS = [
@@ -147,7 +141,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 def authenticate_user(username: str, password: str) -> bool:
     """Checks credentials and sets session state if successful."""
-    if username in CREDENTIALS and CREDENTIALS[username] == password:
+    if username == CONFIG_USERNAME and password == CONFIG_PASSWORD:
         st.session_state.authenticated = True
         st.session_state.username = username
         return True
