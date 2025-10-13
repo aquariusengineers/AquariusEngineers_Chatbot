@@ -23,6 +23,7 @@ PDF_FOLDER = "./product_pdfs"  # Folder containing your PDFs
 DATA_CACHE = "./data_cache.pkl"  # Cached processed data
 CONFIG_USERNAME = st.secrets["app_credentials"]["username"]
 CONFIG_PASSWORD = st.secrets["app_credentials"]["password"]
+LOGO_PATH = "./LOGO_Aquarius.png"  # Path to your company logo (optional)
 
 # Model names to try (in order)
 GEMINI_MODELS = [
@@ -40,7 +41,7 @@ IMAGE_DPI = 150  # Image quality (100-200 recommended)
 # Page config (NO CHANGE)
 st.set_page_config(
     page_title="Aquarius Product Assistant",
-    page_icon="🏗️",
+    page_icon=LOGO_PATH,
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -93,6 +94,13 @@ st.markdown("""
         border-radius: 0.5rem;
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         margin: 0.5rem 0;
+    }
+    .header {
+        display: flex;
+        align-items: center;
+        gap: 15px;
+        text-align: center;
+        justify-content: center;
     }
     .header-banner {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -375,7 +383,7 @@ def load_or_process_pdfs():
     return all_data
 
 def find_relevant_content(query, database):
-    """Find all relevant content for the query, including images from relevant PDFs"""
+    """Find all relevant content for the query, including images from ALL relevant PDFs"""
     query_lower = query.lower()
     relevant_data = {
         'text_sections': [],
@@ -443,25 +451,33 @@ def find_relevant_content(query, database):
     # Sort documents by relevance score
     sorted_docs = sorted(relevant_data['relevant_docs'].items(), key=lambda x: x[1], reverse=True)
     
-    # Get images from top relevant documents
-    images_collected = 0
-    for doc_name, score in sorted_docs:
-        if images_collected >= 5:
-            break
+    # Get images from ALL relevant documents (distribute evenly)
+    # Dynamically determine max images based on number of relevant docs
+    if sorted_docs:
+        max_images = min(10, len(sorted_docs) * 3)  # Up to 3 images per doc, max 10 total
+        images_per_doc = max(1, max_images // len(sorted_docs))
+        
+        for doc_name, score in sorted_docs:
+            # Find the document
+            for doc in database['documents']:
+                if doc['filename'] == doc_name:
+                    # Get up to images_per_doc images from this document
+                    doc_images_collected = 0
+                    for img in doc['images']:
+                        if doc_images_collected >= images_per_doc:
+                            break
+                        if len(relevant_data['images']) >= max_images:
+                            break
+                        relevant_data['images'].append({
+                            'source': doc['filename'],
+                            'page': img['page'],
+                            'data': img['data']
+                        })
+                        doc_images_collected += 1
+                    break
             
-        # Find the document
-        for doc in database['documents']:
-            if doc['filename'] == doc_name:
-                # Get images from this document
-                for img in doc['images']:
-                    if images_collected >= 5:
-                        break
-                    relevant_data['images'].append({
-                        'source': doc['filename'],
-                        'page': img['page'],
-                        'data': img['data']
-                    })
-                    images_collected += 1
+            # Stop if we've reached max images
+            if len(relevant_data['images']) >= max_images:
                 break
     
     # Remove the relevant_docs dict before returning (not needed in response)
@@ -480,9 +496,10 @@ IMPORTANT INSTRUCTIONS:
 2. Include ALL specifications when discussing models
 3. Include ALL relevant details from the documentation
 4. Format specifications in clear tables
-5. Cite page numbers and document sources
+5. DO NOT mention page numbers or document sources in your response
 6. If asked about a model, provide FULL specifications
 7. Be thorough and detailed in your response
+8. Present information naturally without citing sources
 
 """
     
@@ -506,7 +523,7 @@ IMPORTANT INSTRUCTIONS:
         for table in relevant_data['tables'][:5]:
             # Convert table data to JSON string for better model ingestion
             table_json = json.dumps(table['data'])
-            prompt += f"\nPage {table['page']}:\n{table_json}\n"
+            prompt += f"\n{table_json}\n"
     
     # Add general context
     prompt += f"\n\n=== GENERAL PRODUCT INFORMATION ===\n{database['full_text'][:5000]}\n"
@@ -518,6 +535,8 @@ Now provide a COMPREHENSIVE answer based on the above information, including:
 - All applicable model information
 - Features and capabilities
 - Technical details
+
+Remember: DO NOT mention sources, page numbers, or document names in your response.
 
 Answer:"""
     
@@ -556,10 +575,25 @@ if not st.session_state.authenticated:
 # --- Everything below this line runs only if authenticated ---
 initialize_gemini()
 
+# Load logo if exists
+logo_html = ""
+if os.path.exists(LOGO_PATH):
+    try:
+        with open(LOGO_PATH, "rb") as f:
+            logo_data = base64.b64encode(f.read()).decode()
+            logo_html = f'<img src="data:image/png;base64,{logo_data}" style="height: 80px; margin-bottom: 10px;">'
+    except:
+        logo_html = "🏗️"
+else:
+    logo_html = "🏗️"
+
 # Header
 st.markdown(f"""
 <div class="header-banner">
-    <h1>🏗️ Aquarius Product Assistant</h1>
+    <span class="header">
+    {logo_html}
+    <h1>Aquarius Product Assistant</h1>
+    </span>
     <p>Your comprehensive guide to Aquarius construction equipment</p>
 </div>
 """, unsafe_allow_html=True)
@@ -605,10 +639,11 @@ for message in st.session_state.messages:
         # Show images if available
         if "images" in message and message["images"]:
             st.markdown("### 📸 Relevant Product Images")
-            # Limit to 3 columns for display
-            cols = st.columns(min(3, len(message["images"])))
+            
+            # Display all images without grouping by source
+            cols = st.columns(4)
             for idx, img_data in enumerate(message["images"]):
-                with cols[idx % 3]:
+                with cols[idx % 4]:
                     img_bytes = base64.b64decode(img_data['data'])
                     page = img_data.get('page', '?')
                     st.image(img_bytes, caption=f"Page {page}", 
