@@ -20,7 +20,9 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow warnings
 # ============= CONFIGURATION (EDIT THESE) =============
 GEMINI_API_KEY = st.secrets["external_api"]["api_key"]  # Your API key
 PDF_FOLDER = "./product_pdfs"  # Folder containing your PDFs
+IMAGE_PDF_FOLDER = "./Product Images"  # Folder containing image files organized by category
 DATA_CACHE = "./data_cache.pkl"  # Cached processed data
+IMAGE_CACHE = "./image_cache.pkl"  # Cached image data
 CONFIG_USERNAME = st.secrets["app_credentials"]["username"]
 CONFIG_PASSWORD = st.secrets["app_credentials"]["password"]
 LOGO_PATH = "./LOGO_Aquarius.png"  # Path to your company logo (optional)
@@ -34,11 +36,11 @@ GEMINI_MODELS = [
 ]
 
 # Image extraction settings
-SKIP_FIRST_N_PAGES = 4  # Skip first N pages (usually company info, not product images)
+SKIP_FIRST_N_PAGES = 0  # For image files, usually don't skip
 IMAGE_DPI = 150  # Image quality (100-200 recommended)
 # =====================================================
 
-# Page config (NO CHANGE)
+# Page config
 st.set_page_config(
     page_title="Aquarius Product Assistant",
     page_icon=LOGO_PATH,
@@ -46,7 +48,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS (NO CHANGE)
+# Custom CSS
 st.markdown("""
 <style>
     .main {
@@ -134,6 +136,8 @@ if 'messages' not in st.session_state:
     st.session_state.messages = []
 if 'product_database' not in st.session_state:
     st.session_state.product_database = None
+if 'image_database' not in st.session_state:
+    st.session_state.image_database = None
 if 'models_index' not in st.session_state:
     st.session_state.models_index = {}
 if 'chat_session' not in st.session_state:
@@ -159,13 +163,9 @@ def authenticate_user(username: str, password: str) -> bool:
 
 def login_form():
     """Renders the login form."""
-
-    # Create columns: an empty column on the left, a column for the form, an empty column on the right
-    # The numbers [1, 2, 1] mean the middle column will be 2 units wide,
-    # and the side columns 1 unit each, making the form take up 50% of the available width.
     col1, col2, col3 = st.columns([1, 2, 1]) 
 
-    with col2: # Place the form inside the middle column
+    with col2:
         st.title("🔒 Login to Product Assistant")
         with st.form("login_form"):
             username = st.text_input("Username")
@@ -182,7 +182,7 @@ def login_form():
     
 def logout():
     """Clears authentication and session-specific data."""
-    for key in ['authenticated', 'username', 'messages', 'product_database', 'models_index', 'chat_session']:
+    for key in ['authenticated', 'username', 'messages', 'product_database', 'image_database', 'models_index', 'chat_session']:
         if key in st.session_state:
             del st.session_state[key]
     st.rerun() 
@@ -245,13 +245,12 @@ def extract_models_from_text(text):
     return models
 
 def process_pdf_comprehensive(pdf_path):
-    """Comprehensive PDF processing - text, tables, images (WITHOUT description analysis)"""
+    """Comprehensive PDF processing - text and tables (NO images from product catalogs)"""
     pdf_data = {
         'filename': os.path.basename(pdf_path),
         'full_text': '',
         'pages': [],
         'models': {},
-        'images': [],
         'tables': []
     }
     
@@ -282,37 +281,108 @@ def process_pdf_comprehensive(pdf_path):
         
         # Extract models and their specifications
         pdf_data['models'] = extract_models_from_text(pdf_data['full_text'])
-        
-        # Extract images (WITHOUT API calls for description)
-        try:
-            images = convert_from_path(pdf_path, dpi=IMAGE_DPI)
-            for idx, img in enumerate(images):
-                page_num = idx + 1
-                
-                # Skip first N pages 
-                if page_num <= SKIP_FIRST_N_PAGES:
-                    continue
-                
-                img_byte_arr = io.BytesIO()
-                img.save(img_byte_arr, format='PNG')
-                img_base64 = base64.b64encode(img_byte_arr.getvalue()).decode()
-                
-                pdf_data['images'].append({
-                    'page': page_num,
-                    'data': img_base64
-                })
-        except Exception as e:
-            st.warning(f"Could not extract images from {pdf_path}: {str(e)}")
     
     except Exception as e:
         st.error(f"Error processing {pdf_path}: {str(e)}")
     
     return pdf_data
 
-
+def load_image_database():
+    """Load or process images from the Product Images folder (JPG/PNG files organized by category)"""
+    
+    # Check if cache exists
+    if os.path.exists(IMAGE_CACHE):
+        try:
+            with open(IMAGE_CACHE, 'rb') as f:
+                return pickle.load(f)
+        except:
+            pass
+    
+    if not os.path.exists(IMAGE_PDF_FOLDER):
+        st.warning(f"Image folder not found: {IMAGE_PDF_FOLDER}")
+        return {'images': [], 'categories': {}}
+    
+    all_images = []
+    categories = {}
+    
+    # Get all category folders
+    category_folders = [f for f in Path(IMAGE_PDF_FOLDER).iterdir() if f.is_dir()]
+    
+    if not category_folders:
+        st.warning(f"No category folders found in {IMAGE_PDF_FOLDER}")
+        return {'images': [], 'categories': {}}
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    # Count total images
+    total_images = 0
+    for category_folder in category_folders:
+        total_images += len(list(category_folder.glob("*.jpg"))) + len(list(category_folder.glob("*.jpeg"))) + len(list(category_folder.glob("*.png")))
+    
+    if total_images == 0:
+        st.warning(f"No image files (JPG/PNG) found in category folders")
+        return {'images': [], 'categories': {}}
+    
+    processed = 0
+    
+    for category_folder in category_folders:
+        category_name = category_folder.name
+        categories[category_name] = []
+        
+        # Get all image files in this category (JPG, JPEG, PNG)
+        image_files = list(category_folder.glob("*.jpg")) + \
+                     list(category_folder.glob("*.jpeg")) + \
+                     list(category_folder.glob("*.png"))
+        
+        for img_path in image_files:
+            status_text.text(f"Processing {category_name}/{img_path.name}...")
+            
+            try:
+                # Read and encode image
+                with open(img_path, "rb") as f:
+                    img_data = f.read()
+                    img_base64 = base64.b64encode(img_data).decode()
+                
+                # Extract image name (filename without extension)
+                image_name = img_path.stem  # Gets filename without extension
+                
+                image_info = {
+                    'category': category_name,
+                    'name': image_name,
+                    'data': img_base64,
+                    'source': img_path.name,
+                    'page': None  # Not applicable for individual image files
+                }
+                
+                all_images.append(image_info)
+                categories[category_name].append(image_info)
+                
+            except Exception as e:
+                st.warning(f"Could not process {img_path}: {str(e)}")
+            
+            processed += 1
+            progress_bar.progress(processed / total_images)
+    
+    image_data = {
+        'images': all_images,
+        'categories': categories
+    }
+    
+    # Save cache
+    try:
+        with open(IMAGE_CACHE, 'wb') as f:
+            pickle.dump(image_data, f)
+    except Exception as e:
+        st.warning(f"Could not save image cache: {str(e)}")
+    
+    status_text.text(f"✅ {total_images} product images loaded successfully!")
+    progress_bar.empty()
+    
+    return image_data
 
 def load_or_process_pdfs():
-    """Load cached data or process PDFs from folder (NO image analysis)."""
+    """Load cached data or process PDFs from folder (NO images from product catalogs)."""
     
     # Check if cache exists
     if os.path.exists(DATA_CACHE):
@@ -337,8 +407,7 @@ def load_or_process_pdfs():
     all_data = {
         'documents': [],
         'full_text': '',
-        'models_index': {},
-        'all_images': []
+        'models_index': {}
     }
     
     progress_bar = st.progress(0)
@@ -359,14 +428,6 @@ def load_or_process_pdfs():
                 'source': pdf_data['filename'],
                 'context': ctx
             } for ctx in contexts])
-        
-        # Store images without descriptions
-        for img in pdf_data['images']:
-            all_data['all_images'].append({
-                'source': pdf_data['filename'],
-                'page': img['page'],
-                'data': img['data']
-            })
             
         progress_bar.progress((idx + 1) / len(pdf_files))
     
@@ -382,15 +443,15 @@ def load_or_process_pdfs():
     
     return all_data
 
-def find_relevant_content(query, database):
-    """Find all relevant content for the query, including images from ALL relevant PDFs"""
+def find_relevant_content(query, database, image_database):
+    """Find all relevant content for the query, including images from separate image files"""
     query_lower = query.lower()
     relevant_data = {
         'text_sections': [],
         'models': [],
         'images': [],
         'tables': [],
-        'relevant_docs': {}  # Track which documents are relevant with scores
+        'relevant_categories': set()
     }
     
     # Check if query mentions specific models
@@ -400,12 +461,8 @@ def find_relevant_content(query, database):
                 'model': model,
                 'data': database['models_index'][model]
             })
-            # Track which documents mention this model
-            for data in database['models_index'][model]:
-                doc_name = data['source']
-                relevant_data['relevant_docs'][doc_name] = relevant_data['relevant_docs'].get(doc_name, 0) + 5
     
-    # Find relevant text sections and score documents
+    # Find relevant text sections
     words = [w for w in query_lower.split() if len(w) > 3]
     
     for doc in database['documents']:
@@ -417,7 +474,7 @@ def find_relevant_content(query, database):
                 doc_score += text.count(word)
                 idx = 0
                 section_count = 0
-                while section_count < 3:  # Limit sections per word
+                while section_count < 3:
                     idx = text.find(word, idx)
                     if idx == -1:
                         break
@@ -437,52 +494,54 @@ def find_relevant_content(query, database):
                     if len(relevant_data['text_sections']) >= 10:
                         break
         
-        # Update document score
-        if doc_score > 0:
-            relevant_data['relevant_docs'][doc['filename']] = relevant_data['relevant_docs'].get(doc['filename'], 0) + doc_score
-        
         # Get relevant tables
         for table_data in doc['tables']:
             table_str = str(table_data['data']).lower()
             if any(word in table_str for word in words):
                 relevant_data['tables'].append(table_data)
-                relevant_data['relevant_docs'][doc['filename']] = relevant_data['relevant_docs'].get(doc['filename'], 0) + 3
 
-    # Sort documents by relevance score
-    sorted_docs = sorted(relevant_data['relevant_docs'].items(), key=lambda x: x[1], reverse=True)
-    
-    # Get images from ALL relevant documents (distribute evenly)
-    # Dynamically determine max images based on number of relevant docs
-    if sorted_docs:
-        max_images = min(10, len(sorted_docs) * 3)  # Up to 3 images per doc, max 10 total
-        images_per_doc = max(1, max_images // len(sorted_docs))
+    # Find relevant images from image database
+    if image_database and 'images' in image_database:
+        image_scores = []
         
-        for doc_name, score in sorted_docs:
-            # Find the document
-            for doc in database['documents']:
-                if doc['filename'] == doc_name:
-                    # Get up to images_per_doc images from this document
-                    doc_images_collected = 0
-                    for img in doc['images']:
-                        if doc_images_collected >= images_per_doc:
-                            break
-                        if len(relevant_data['images']) >= max_images:
-                            break
-                        relevant_data['images'].append({
-                            'source': doc['filename'],
-                            'page': img['page'],
-                            'data': img['data']
-                        })
-                        doc_images_collected += 1
-                    break
+        for img in image_database['images']:
+            score = 0
+            img_name_lower = img['name'].lower()
+            img_category_lower = img['category'].lower()
             
-            # Stop if we've reached max images
-            if len(relevant_data['images']) >= max_images:
-                break
+            # Score based on query match with image name (filename)
+            for word in words:
+                if word in img_name_lower:
+                    score += 5
+                if word in img_category_lower:
+                    score += 2
+            
+            # Score based on model match
+            for model_info in relevant_data['models']:
+                model_lower = model_info['model'].lower()
+                # Check if model name is in image filename
+                if model_lower in img_name_lower:
+                    score += 10
+                # Check if parts of model name are in filename
+                model_parts = model_lower.replace('-', ' ').replace('_', ' ').split()
+                if any(part in img_name_lower for part in model_parts if len(part) > 2):
+                    score += 7
+            
+            if score > 0:
+                image_scores.append((score, img))
+        
+        # Sort by score and take top images
+        image_scores.sort(key=lambda x: x[0], reverse=True)
+        
+        max_images = min(10, max(3, len(image_scores) // 2)) if image_scores else 0
+        for score, img in image_scores[:max_images]:
+            relevant_data['images'].append({
+                'source': img['source'],
+                'data': img['data'],
+                'name': img['name'],
+                'category': img['category']
+            })
     
-    # Remove the relevant_docs dict before returning (not needed in response)
-    del relevant_data['relevant_docs']
-            
     return relevant_data
 
 def create_comprehensive_prompt(query, relevant_data, database):
@@ -542,11 +601,11 @@ Answer:"""
     
     return prompt
 
-def query_gemini_comprehensive(query, database):
+def query_gemini_comprehensive(query, database, image_database):
     """Query with comprehensive context using the persistent chat session."""
     try:
-        # Find all relevant content (always includes images from relevant PDFs)
-        relevant_data = find_relevant_content(query, database)
+        # Find all relevant content (includes images from separate image files)
+        relevant_data = find_relevant_content(query, database, image_database)
         
         # Create comprehensive RAG prompt
         prompt = create_comprehensive_prompt(query, relevant_data, database)
@@ -615,6 +674,11 @@ if st.session_state.product_database is None:
         if st.session_state.product_database:
             st.session_state.models_index = st.session_state.product_database['models_index']
 
+# Load image database
+if st.session_state.image_database is None:
+    with st.spinner("🔄 Loading product images..."):
+        st.session_state.image_database = load_image_database()
+
 
 if st.session_state.product_database is None:
     st.error("⚠️ Cannot load product database. Please check configuration.")
@@ -645,8 +709,9 @@ for message in st.session_state.messages:
             for idx, img_data in enumerate(message["images"]):
                 with cols[idx % 4]:
                     img_bytes = base64.b64decode(img_data['data'])
-                    page = img_data.get('page', '?')
-                    st.image(img_bytes, caption=f"Page {page}", 
+                    # Use image name as caption if available, otherwise use page number
+                    caption = img_data.get('name', f"Page {img_data.get('page', '?')}")
+                    st.image(img_bytes, caption=caption, 
                               use_container_width=True, output_format="PNG")
 
 # Chat input
@@ -658,7 +723,7 @@ if user_query:
     
     # Query database
     with st.spinner("🔍 Searching and synthesizing information..."):
-        result = query_gemini_comprehensive(user_query, st.session_state.product_database)
+        result = query_gemini_comprehensive(user_query, st.session_state.product_database, st.session_state.image_database)
         
         # Add assistant message
         assistant_message = {
@@ -708,10 +773,28 @@ with st.sidebar:
     
     st.markdown("---")
     
-    if st.button("🔄 Refresh Database"):
+    if st.button("🔄 Reload PDFs Only"):
         if os.path.exists(DATA_CACHE):
             os.remove(DATA_CACHE)
         st.session_state.product_database = None
+        st.info("PDF cache cleared. Images cache preserved.")
+        st.rerun()
+    
+    if st.button("🖼️ Reload Images Only"):
+        if os.path.exists(IMAGE_CACHE):
+            os.remove(IMAGE_CACHE)
+        st.session_state.image_database = None
+        st.info("Image cache cleared. PDF cache preserved.")
+        st.rerun()
+    
+    if st.button("🔄 Reload All Data"):
+        if os.path.exists(DATA_CACHE):
+            os.remove(DATA_CACHE)
+        if os.path.exists(IMAGE_CACHE):
+            os.remove(IMAGE_CACHE)
+        st.session_state.product_database = None
+        st.session_state.image_database = None
+        st.info("All caches cleared.")
         st.rerun()
     
     if st.button("🗑️ Clear Chat"):

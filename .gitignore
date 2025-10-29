@@ -17,6 +17,7 @@ secrets.toml
 # ============= DATA FILES =============
 # Cached processed data
 data_cache.pkl
+image_cache.pkl
 *.pkl
 *.pickle
 
