@@ -12,22 +12,23 @@ from pdf2image import convert_from_path
 import pickle
 import warnings
 from typing import Optional, Dict, Any
+import sqlite3  # ← ADDED
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-# ============= CONFIGURATION (EDIT THESE) =============
-GEMINI_API_KEY = st.secrets["external_api"]["api_key"]  # Your API key
-PDF_FOLDER = "./product_pdfs"  # Folder containing your PDFs
-IMAGE_PDF_FOLDER = "./Product Images"  # Folder containing image files organized by category
-DATA_CACHE = "./data_cache.pkl"  # Cached processed data
-IMAGE_CACHE = "./image_cache.pkl"  # Cached image data
+# ============= CONFIGURATION =============
+GEMINI_API_KEY = st.secrets["external_api"]["api_key"]
+PDF_FOLDER = "./product_pdfs"
+IMAGE_PDF_FOLDER = "./Product Images"
+DATA_CACHE = "./data_cache.pkl"
+IMAGE_CACHE = "./image_cache.pkl"
 CONFIG_USERNAME = st.secrets["app_credentials"]["username"]
 CONFIG_PASSWORD = st.secrets["app_credentials"]["password"]
-LOGO_PATH = "./LOGO_Aquarius.png"  # Path to your company logo (optional)
+LOGO_PATH = "./LOGO_Aquarius.png"
+DB_PATH = "./chat_database.db"  # ← ADDED
 
-# Model names to try (in order)
 GEMINI_MODELS = [
     "models/gemini-2.5-flash",
     "models/gemini-2.0-flash-exp",
@@ -35,9 +36,7 @@ GEMINI_MODELS = [
     "models/gemini-pro-latest",
 ]
 
-# Image extraction settings
-SKIP_FIRST_N_PAGES = 0  # For image files, usually don't skip
-IMAGE_DPI = 150  # Image quality (100-200 recommended)
+IMAGE_DPI = 150
 # =====================================================
 
 # Page config
@@ -45,10 +44,10 @@ st.set_page_config(
     page_title="Aquarius Product Assistant",
     page_icon=LOGO_PATH,
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"  # ← Changed to expanded for chat sessions
 )
 
-# Custom CSS
+# Custom CSS (same as before)
 st.markdown("""
 <style>
     .main {
@@ -85,25 +84,6 @@ st.markdown("""
         border-left: 4px solid #667eea;
         margin-right: 20%;
     }
-    .model-spec-box {
-        background: #f8f9fa;
-        border-left: 4px solid #28a745;
-        padding: 1rem;
-        margin: 1rem 0;
-        border-radius: 0.5rem;
-    }
-    .product-image {
-        border-radius: 0.5rem;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        margin: 0.5rem 0;
-    }
-    .header {
-        display: flex;
-        align-items: center;
-        gap: 15px;
-        text-align: center;
-        justify-content: center;
-    }
     .header-banner {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
@@ -113,21 +93,17 @@ st.markdown("""
         margin-bottom: 2rem;
         box-shadow: 0 4px 12px rgba(0,0,0,0.15);
     }
-    .spec-table {
-        background: white;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        margin: 1rem 0;
-    }
-    .stChatInput > div {
-        background: white;
-        border-radius: 2rem;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    .header {
+        display: flex;
+        align-items: center;
+        gap: 15px;
+        text-align: center;
+        justify-content: center;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize Streamlit session state for AUTHENTICATION and CHAT
+# Initialize session state
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 if 'username' not in st.session_state:
@@ -144,15 +120,15 @@ if 'chat_session' not in st.session_state:
     st.session_state.chat_session = None
 if 'working_model' not in st.session_state:
     st.session_state.working_model = None
+if 'current_session_id' not in st.session_state:  # ← ADDED
+    st.session_state.current_session_id = None
+if 'session_list' not in st.session_state:  # ← ADDED
+    st.session_state.session_list = []
 
-
-# Initialize Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 
 # --- AUTHENTICATION FUNCTIONS ---
-
 def authenticate_user(username: str, password: str) -> bool:
-    """Checks credentials and sets session state if successful."""
     if username == CONFIG_USERNAME and password == CONFIG_PASSWORD:
         st.session_state.authenticated = True
         st.session_state.username = username
@@ -162,16 +138,13 @@ def authenticate_user(username: str, password: str) -> bool:
     return False
 
 def login_form():
-    """Renders the login form."""
-    col1, col2, col3 = st.columns([1, 2, 1]) 
-
+    col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.title("🔒 Login to Product Assistant")
         with st.form("login_form"):
             username = st.text_input("Username")
             password = st.text_input("Password", type="password")
             submit_button = st.form_submit_button("Login")
-
             if submit_button:
                 if authenticate_user(username, password):
                     st.success("Login successful!")
@@ -179,18 +152,235 @@ def login_form():
                 else:
                     st.error("Invalid username or password")
     st.stop()
-    
+
 def logout():
-    """Clears authentication and session-specific data."""
-    for key in ['authenticated', 'username', 'messages', 'product_database', 'image_database', 'models_index', 'chat_session']:
+    for key in ['authenticated', 'username', 'messages', 'product_database', 'image_database', 'models_index', 'chat_session', 'current_session_id', 'session_list']:
         if key in st.session_state:
             del st.session_state[key]
-    st.rerun() 
+    st.rerun()
 
-# --- GEMINI INIT (Ensures this only runs once) ---
+# --- DATABASE FUNCTIONS FOR MULTI-CHAT SESSIONS ---
+
+def init_database():
+    """Initialize SQLite database"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            session_name TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN DEFAULT 1,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            images TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (session_id) REFERENCES chat_sessions (id)
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
+def get_or_create_user(username):
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    cursor = conn.cursor()
+    cursor.execute('SELECT id FROM users WHERE username = ?', (username,))
+    result = cursor.fetchone()
+    if result:
+        user_id = result[0]
+    else:
+        cursor.execute('INSERT INTO users (username) VALUES (?)', (username,))
+        user_id = cursor.lastrowid
+        conn.commit()
+    conn.close()
+    return user_id
+
+def create_new_chat_session(username, session_name=None):
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        user_id = get_or_create_user(username)
+        
+        if not session_name:
+            cursor.execute('SELECT COUNT(*) FROM chat_sessions WHERE user_id = ?', (user_id,))
+            count = cursor.fetchone()[0]
+            session_name = f"Chat {count + 1}"
+        
+        cursor.execute('''
+            INSERT INTO chat_sessions (user_id, session_name)
+            VALUES (?, ?)
+        ''', (user_id, session_name))
+        
+        session_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return session_id
+    except Exception as e:
+        st.error(f"Error creating session: {e}")
+        return None
+
+def get_user_sessions(username):
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        user_id = get_or_create_user(username)
+        
+        cursor.execute('''
+            SELECT 
+                s.id,
+                s.session_name,
+                s.created_at,
+                s.last_updated,
+                COUNT(m.id) as message_count
+            FROM chat_sessions s
+            LEFT JOIN chat_messages m ON s.id = m.session_id
+            WHERE s.user_id = ? AND s.is_active = 1
+            GROUP BY s.id
+            ORDER BY s.last_updated DESC
+        ''', (user_id,))
+        
+        sessions = []
+        for row in cursor.fetchall():
+            sessions.append({
+                'id': row[0],
+                'name': row[1],
+                'created_at': row[2],
+                'last_updated': row[3],
+                'message_count': row[4]
+            })
+        conn.close()
+        return sessions
+    except Exception as e:
+        st.warning(f"Could not load sessions: {e}")
+        return []
+
+def get_or_create_default_session(username):
+    sessions = get_user_sessions(username)
+    if sessions:
+        return sessions[0]['id']
+    else:
+        return create_new_chat_session(username, "Chat 1")
+
+def save_message_to_db(session_id, role, content, images=None):
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        images_json = json.dumps(images) if images else None
+        
+        cursor.execute('''
+            INSERT INTO chat_messages (session_id, role, content, images)
+            VALUES (?, ?, ?, ?)
+        ''', (session_id, role, content, images_json))
+        
+        cursor.execute('''
+            UPDATE chat_sessions 
+            SET last_updated = CURRENT_TIMESTAMP 
+            WHERE id = ?
+        ''', (session_id,))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Error saving message: {e}")
+        return False
+
+def load_session_messages(session_id, limit=100):
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT role, content, images
+            FROM chat_messages
+            WHERE session_id = ?
+            ORDER BY timestamp ASC
+            LIMIT ?
+        ''', (session_id, limit))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        messages = []
+        for row in rows:
+            message = {'role': row[0], 'content': row[1]}
+            if row[2]:
+                message['images'] = json.loads(row[2])
+            messages.append(message)
+        return messages
+    except Exception as e:
+        st.warning(f"Could not load messages: {e}")
+        return []
+
+def rename_session(session_id, new_name):
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE chat_sessions SET session_name = ? WHERE id = ?', (new_name, session_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Error renaming: {e}")
+        return False
+
+def delete_session_permanently(session_id):
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM chat_messages WHERE session_id = ?', (session_id,))
+        cursor.execute('DELETE FROM chat_sessions WHERE id = ?', (session_id,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Error deleting: {e}")
+        return False
+
+def auto_rename_session_from_first_message(session_id):
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT content FROM chat_messages 
+            WHERE session_id = ? AND role = 'user'
+            ORDER BY timestamp ASC LIMIT 1
+        ''', (session_id,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            content = result[0]
+            preview = content[:40] + "..." if len(content) > 40 else content
+            rename_session(session_id, preview)
+            return preview
+    except:
+        pass
+    return None
+
+# --- GEMINI INIT ---
 
 def initialize_gemini():
-    """Find working model and initialize chat session."""
     if st.session_state.working_model is not None and st.session_state.chat_session is not None:
         return
         
@@ -205,7 +395,7 @@ def initialize_gemini():
             continue
 
     if WORKING_MODEL is None:
-        st.error("❌ Could not find a working Gemini model. Please check your API key.")
+        st.error("❌ Could not find a working Gemini model.")
         st.stop()
         
     st.session_state.working_model = WORKING_MODEL
@@ -214,38 +404,30 @@ def initialize_gemini():
         model = genai.GenerativeModel(WORKING_MODEL)
         st.session_state.chat_session = model.start_chat(history=[])
     except Exception as e:
-        st.error(f"Could not start chat session: {e}")
+        st.error(f"Could not start chat: {e}")
         st.stop()
-        
-# --- END GEMINI INIT ---
 
+# --- PDF PROCESSING FUNCTIONS (same as before) ---
 
 def extract_models_from_text(text):
     models = {}
-    
-    # Pattern for model names (e.g., CW 10, SP 30, 1004 D SHP)
     model_patterns = [
-        r'\b([A-Z]+\s*\d+(?:\s*[A-Z]+)*)\b',  # CW 10, SP 30
-        r'\b(\d{3,4}\s*[A-Z]+(?:\s*[A-Z]+)*)\b',  # 1004 D SHP
+        r'\b([A-Z]+\s*\d+(?:\s*[A-Z]+)*)\b',
+        r'\b(\d{3,4}\s*[A-Z]+(?:\s*[A-Z]+)*)\b',
     ]
-    
     for pattern in model_patterns:
         matches = re.finditer(pattern, text)
         for match in matches:
             model_name = match.group(1).strip()
-            # Get context around model (500 chars before and after)
             start = max(0, match.start() - 500)
             end = min(len(text), match.end() + 500)
             context = text[start:end]
-            
             if model_name not in models:
                 models[model_name] = []
             models[model_name].append(context)
-    
     return models
 
 def process_pdf_comprehensive(pdf_path):
-    """Comprehensive PDF processing - text and tables (NO images from product catalogs)"""
     pdf_data = {
         'filename': os.path.basename(pdf_path),
         'full_text': '',
@@ -253,44 +435,28 @@ def process_pdf_comprehensive(pdf_path):
         'models': {},
         'tables': []
     }
-    
     try:
-        # Extract text and structure
         with pdfplumber.open(pdf_path) as pdf:
             for page_num, page in enumerate(pdf.pages):
                 page_text = page.extract_text() or ""
                 pdf_data['full_text'] += f"\n--- Page {page_num + 1} ---\n{page_text}"
-                
                 page_data = {
                     'page_num': page_num + 1,
                     'text': page_text,
                     'tables': []
                 }
-                
-                # Extract tables
                 tables = page.extract_tables()
                 if tables:
                     for table in tables:
                         page_data['tables'].append(table)
-                        pdf_data['tables'].append({
-                            'page': page_num + 1,
-                            'data': table
-                        })
-                
+                        pdf_data['tables'].append({'page': page_num + 1, 'data': table})
                 pdf_data['pages'].append(page_data)
-        
-        # Extract models and their specifications
         pdf_data['models'] = extract_models_from_text(pdf_data['full_text'])
-    
     except Exception as e:
         st.error(f"Error processing {pdf_path}: {str(e)}")
-    
     return pdf_data
 
 def load_image_database():
-    """Load or process images from the Product Images folder (JPG/PNG files organized by category)"""
-    
-    # Check if cache exists
     if os.path.exists(IMAGE_CACHE):
         try:
             with open(IMAGE_CACHE, 'rb') as f:
@@ -304,87 +470,59 @@ def load_image_database():
     
     all_images = []
     categories = {}
-    
-    # Get all category folders
     category_folders = [f for f in Path(IMAGE_PDF_FOLDER).iterdir() if f.is_dir()]
     
     if not category_folders:
-        st.warning(f"No category folders found in {IMAGE_PDF_FOLDER}")
+        st.warning(f"No category folders found")
         return {'images': [], 'categories': {}}
     
     progress_bar = st.progress(0)
     status_text = st.empty()
-    
-    # Count total images
-    total_images = 0
-    for category_folder in category_folders:
-        total_images += len(list(category_folder.glob("*.jpg"))) + len(list(category_folder.glob("*.jpeg"))) + len(list(category_folder.glob("*.png")))
+    total_images = sum(len(list(cf.glob("*.jpg"))) + len(list(cf.glob("*.jpeg"))) + len(list(cf.glob("*.png"))) for cf in category_folders)
     
     if total_images == 0:
-        st.warning(f"No image files (JPG/PNG) found in category folders")
+        st.warning(f"No images found")
         return {'images': [], 'categories': {}}
     
     processed = 0
-    
     for category_folder in category_folders:
         category_name = category_folder.name
         categories[category_name] = []
-        
-        # Get all image files in this category (JPG, JPEG, PNG)
-        image_files = list(category_folder.glob("*.jpg")) + \
-                     list(category_folder.glob("*.jpeg")) + \
-                     list(category_folder.glob("*.png"))
+        image_files = list(category_folder.glob("*.jpg")) + list(category_folder.glob("*.jpeg")) + list(category_folder.glob("*.png"))
         
         for img_path in image_files:
             status_text.text(f"Processing {category_name}/{img_path.name}...")
-            
             try:
-                # Read and encode image
                 with open(img_path, "rb") as f:
                     img_data = f.read()
                     img_base64 = base64.b64encode(img_data).decode()
-                
-                # Extract image name (filename without extension)
-                image_name = img_path.stem  # Gets filename without extension
-                
+                image_name = img_path.stem
                 image_info = {
                     'category': category_name,
                     'name': image_name,
                     'data': img_base64,
                     'source': img_path.name,
-                    'page': None  # Not applicable for individual image files
+                    'page': None
                 }
-                
                 all_images.append(image_info)
                 categories[category_name].append(image_info)
-                
             except Exception as e:
                 st.warning(f"Could not process {img_path}: {str(e)}")
-            
             processed += 1
             progress_bar.progress(processed / total_images)
     
-    image_data = {
-        'images': all_images,
-        'categories': categories
-    }
-    
-    # Save cache
+    image_data = {'images': all_images, 'categories': categories}
     try:
         with open(IMAGE_CACHE, 'wb') as f:
             pickle.dump(image_data, f)
     except Exception as e:
-        st.warning(f"Could not save image cache: {str(e)}")
+        st.warning(f"Could not save cache: {str(e)}")
     
-    status_text.text(f"✅ {total_images} product images loaded successfully!")
+    status_text.text(f"✅ {total_images} images loaded!")
     progress_bar.empty()
-    
     return image_data
 
 def load_or_process_pdfs():
-    """Load cached data or process PDFs from folder (NO images from product catalogs)."""
-    
-    # Check if cache exists
     if os.path.exists(DATA_CACHE):
         try:
             with open(DATA_CACHE, 'rb') as f:
@@ -392,147 +530,96 @@ def load_or_process_pdfs():
         except:
             pass
     
-    # Process PDFs
     if not os.path.exists(PDF_FOLDER):
         st.error(f"PDF folder not found: {PDF_FOLDER}")
-        st.info("Please create a folder called 'product_pdfs' and add your PDF files there.")
         return None
     
     pdf_files = list(Path(PDF_FOLDER).glob("*.pdf"))
-    
     if not pdf_files:
-        st.warning(f"No PDF files found in {PDF_FOLDER}")
+        st.warning(f"No PDFs found")
         return None
     
-    all_data = {
-        'documents': [],
-        'full_text': '',
-        'models_index': {}
-    }
-    
+    all_data = {'documents': [], 'full_text': '', 'models_index': {}}
     progress_bar = st.progress(0)
     status_text = st.empty()
     
     for idx, pdf_path in enumerate(pdf_files):
         status_text.text(f"Processing {pdf_path.name}...")
         pdf_data = process_pdf_comprehensive(str(pdf_path))
-        
-        # Indexing Models and Text
         all_data['documents'].append(pdf_data)
         all_data['full_text'] += f"\n\n{'='*50}\nDOCUMENT: {pdf_data['filename']}\n{'='*50}\n{pdf_data['full_text']}"
-        
         for model, contexts in pdf_data['models'].items():
             if model not in all_data['models_index']:
                 all_data['models_index'][model] = []
-            all_data['models_index'][model].extend([{
-                'source': pdf_data['filename'],
-                'context': ctx
-            } for ctx in contexts])
-            
+            all_data['models_index'][model].extend([{'source': pdf_data['filename'], 'context': ctx} for ctx in contexts])
         progress_bar.progress((idx + 1) / len(pdf_files))
     
-    # Save cache
     try:
         with open(DATA_CACHE, 'wb') as f:
             pickle.dump(all_data, f)
     except Exception as e:
         st.warning(f"Could not save cache: {str(e)}")
     
-    status_text.text("✅ All PDFs processed successfully!")
+    status_text.text("✅ PDFs processed!")
     progress_bar.empty()
-    
     return all_data
 
 def find_relevant_content(query, database, image_database):
-    """Find all relevant content for the query, including images from separate image files"""
     query_lower = query.lower()
-    relevant_data = {
-        'text_sections': [],
-        'models': [],
-        'images': [],
-        'tables': [],
-        'relevant_categories': set()
-    }
+    relevant_data = {'text_sections': [], 'models': [], 'images': [], 'tables': [], 'relevant_categories': set()}
     
-    # Check if query mentions specific models
     for model in database['models_index'].keys():
         if model.lower() in query_lower or query_lower in model.lower():
-            relevant_data['models'].append({
-                'model': model,
-                'data': database['models_index'][model]
-            })
+            relevant_data['models'].append({'model': model, 'data': database['models_index'][model]})
     
-    # Find relevant text sections
     words = [w for w in query_lower.split() if len(w) > 3]
     
     for doc in database['documents']:
         text = doc['full_text'].lower()
-        doc_score = 0
-        
         for word in words:
             if word in text:
-                doc_score += text.count(word)
                 idx = 0
                 section_count = 0
                 while section_count < 3:
                     idx = text.find(word, idx)
                     if idx == -1:
                         break
-                    
                     start = max(0, idx - 300)
                     end = min(len(doc['full_text']), idx + 300)
                     section = doc['full_text'][start:end]
-                    
-                    relevant_data['text_sections'].append({
-                        'source': doc['filename'],
-                        'content': section
-                    })
-                    
+                    relevant_data['text_sections'].append({'source': doc['filename'], 'content': section})
                     idx += 1
                     section_count += 1
-                    
                     if len(relevant_data['text_sections']) >= 10:
                         break
         
-        # Get relevant tables
         for table_data in doc['tables']:
             table_str = str(table_data['data']).lower()
             if any(word in table_str for word in words):
                 relevant_data['tables'].append(table_data)
 
-    # Find relevant images from image database
     if image_database and 'images' in image_database:
         image_scores = []
-        
         for img in image_database['images']:
             score = 0
             img_name_lower = img['name'].lower()
             img_category_lower = img['category'].lower()
-            
-            # Score based on query match with image name (filename)
             for word in words:
                 if word in img_name_lower:
                     score += 5
                 if word in img_category_lower:
                     score += 2
-            
-            # Score based on model match
             for model_info in relevant_data['models']:
                 model_lower = model_info['model'].lower()
-                # Check if model name is in image filename
                 if model_lower in img_name_lower:
                     score += 10
-                # Check if parts of model name are in filename
                 model_parts = model_lower.replace('-', ' ').replace('_', ' ').split()
                 if any(part in img_name_lower for part in model_parts if len(part) > 2):
                     score += 7
-            
             if score > 0:
                 image_scores.append((score, img))
         
-        # Sort by score and take top images
         image_scores.sort(key=lambda x: x[0], reverse=True)
-        
         max_images = min(10, max(3, len(image_scores) // 2)) if image_scores else 0
         for score, img in image_scores[:max_images]:
             relevant_data['images'].append({
@@ -545,211 +632,233 @@ def find_relevant_content(query, database, image_database):
     return relevant_data
 
 def create_comprehensive_prompt(query, relevant_data, database):
-    prompt = f"""You are an expert product assistant for Aquarius Engineers, a construction equipment company.
-You have access to complete product catalogs and must provide COMPREHENSIVE, DETAILED answers.
+    prompt = f"""You are an expert product assistant for Aquarius Engineers.
 
 User Question: {query}
 
-IMPORTANT INSTRUCTIONS:
-1. Provide COMPLETE information, not summaries
+INSTRUCTIONS:
+1. Provide COMPLETE information
 2. Include ALL specifications when discussing models
-3. Include ALL relevant details from the documentation
-4. Format specifications in clear tables
-5. DO NOT mention page numbers or document sources in your response
-6. If asked about a model, provide FULL specifications
-7. Be thorough and detailed in your response
-8. Present information naturally without citing sources
+3. Format specifications in clear tables
+4. DO NOT mention page numbers or sources
+5. Be thorough and detailed
 
 """
-    
-    # Add model-specific data
     if relevant_data['models']:
-        prompt += "\n\n=== SPECIFIC MODEL INFORMATION ===\n"
+        prompt += "\n\n=== MODEL INFORMATION ===\n"
         for model_info in relevant_data['models']:
-            prompt += f"\n--- Model: {model_info['model']} ---\n"
-            for data in model_info['data'][:3]:  # Top 3 contexts
+            prompt += f"\n--- {model_info['model']} ---\n"
+            for data in model_info['data'][:3]:
                 prompt += f"\n{data['context']}\n\n"
     
-    # Add relevant text sections
     if relevant_data['text_sections']:
-        prompt += "\n\n=== RELEVANT DOCUMENTATION SECTIONS ===\n"
-        for section in relevant_data['text_sections'][:15]:  # Top 15 sections
+        prompt += "\n\n=== DOCUMENTATION ===\n"
+        for section in relevant_data['text_sections'][:15]:
             prompt += f"\n{section['content']}\n"
     
-    # Add table data
     if relevant_data['tables']:
-        prompt += "\n\n=== SPECIFICATION TABLES ===\n"
+        prompt += "\n\n=== TABLES ===\n"
         for table in relevant_data['tables'][:5]:
-            # Convert table data to JSON string for better model ingestion
-            table_json = json.dumps(table['data'])
-            prompt += f"\n{table_json}\n"
+            prompt += f"\n{json.dumps(table['data'])}\n"
     
-    # Add general context
-    prompt += f"\n\n=== GENERAL PRODUCT INFORMATION ===\n{database['full_text'][:5000]}\n"
-    
-    prompt += """
-
-Now provide a COMPREHENSIVE answer based on the above information, including:
-- Complete specifications if relevant
-- All applicable model information
-- Features and capabilities
-- Technical details
-
-Remember: DO NOT mention sources, page numbers, or document names in your response.
-
-Answer:"""
-    
+    prompt += f"\n\n=== GENERAL INFO ===\n{database['full_text'][:5000]}\n"
+    prompt += "\nProvide a COMPREHENSIVE answer.\n\nAnswer:"
     return prompt
 
 def query_gemini_comprehensive(query, database, image_database):
-    """Query with comprehensive context using the persistent chat session."""
     try:
-        # Find all relevant content (includes images from separate image files)
         relevant_data = find_relevant_content(query, database, image_database)
-        
-        # Create comprehensive RAG prompt
         prompt = create_comprehensive_prompt(query, relevant_data, database)
-        
-        # Use the chat session for conversation history
         response = st.session_state.chat_session.send_message(prompt)
-        
         return {
             'answer': response.text,
             'relevant_images': relevant_data['images'],
             'models_mentioned': [m['model'] for m in relevant_data['models']]
         }
-    
     except Exception as e:
-        return {
-            'answer': f"Error: {str(e)}",
-            'relevant_images': [],
-            'models_mentioned': []
-        }
+        return {'answer': f"Error: {str(e)}", 'relevant_images': [], 'models_mentioned': []}
 
-# ==================== MAIN APPLICATION LOGIC ====================
+# ==================== MAIN APP ====================
 
 if not st.session_state.authenticated:
     login_form()
 
-# --- Everything below this line runs only if authenticated ---
+# Initialize database
+init_database()
+
+# Initialize Gemini
 initialize_gemini()
 
-# Load logo if exists
-logo_html = ""
+# Initialize current session
+if st.session_state.current_session_id is None:
+    st.session_state.current_session_id = get_or_create_default_session(st.session_state.username)
+
+# Load messages for current session
+if st.session_state.messages == []:
+    loaded_messages = load_session_messages(st.session_state.current_session_id)
+    if loaded_messages:
+        st.session_state.messages = loaded_messages
+
+# Load logo
+logo_html = "🏗️"
 if os.path.exists(LOGO_PATH):
     try:
         with open(LOGO_PATH, "rb") as f:
             logo_data = base64.b64encode(f.read()).decode()
-            logo_html = f'<img src="data:image/png;base64,{logo_data}" style="height: 80px; margin-bottom: 10px;">'
+            logo_html = f'<img src="data:image/png;base64,{logo_data}" style="height: 80px;">'
     except:
-        logo_html = "🏗️"
-else:
-    logo_html = "🏗️"
+        pass
 
 # Header
 st.markdown(f"""
 <div class="header-banner">
-    <span class="header">
-    {logo_html}
-    <h1>Aquarius Product Assistant</h1>
-    </span>
-    <p>Your comprehensive guide to Aquarius construction equipment</p>
+    <span class="header">{logo_html}<h1>Aquarius Product Assistant</h1></span>
+    <p>Your comprehensive guide to construction equipment</p>
 </div>
 """, unsafe_allow_html=True)
 
-# Load database
+# Load databases
 if st.session_state.product_database is None:
-    # Need to clear chat session history if database is reloaded
     if 'chat_session' in st.session_state:
         try:
             model = genai.GenerativeModel(st.session_state.working_model)
             st.session_state.chat_session = model.start_chat(history=[])
-        except Exception as e:
-            st.error(f"Could not reset chat session during database load: {e}")
-            st.stop()
-    
-    with st.spinner("🔄 Loading product database..."):
+        except:
+            pass
+    with st.spinner("🔄 Loading database..."):
         st.session_state.product_database = load_or_process_pdfs()
-        
         if st.session_state.product_database:
             st.session_state.models_index = st.session_state.product_database['models_index']
 
-# Load image database
 if st.session_state.image_database is None:
-    with st.spinner("🔄 Loading product images..."):
+    with st.spinner("🔄 Loading images..."):
         st.session_state.image_database = load_image_database()
 
-
 if st.session_state.product_database is None:
-    st.error("⚠️ Cannot load product database. Please check configuration.")
+    st.error("⚠️ Cannot load database")
     st.stop()
 
-# Quick access buttons
-st.markdown("### 🔍 Quick Search")
-cols = st.columns(4)
-
-st.markdown("---")
-
-
-# Display chat history
+# Display chat
 for message in st.session_state.messages:
     if message["role"] == "user":
-        st.markdown(f'<div class="chat-message user-message">👤 <strong>You:</strong><br>{message["content"]}</div>', 
-                    unsafe_allow_html=True)
+        st.markdown(f'<div class="chat-message user-message">👤 <strong>You:</strong><br>{message["content"]}</div>', unsafe_allow_html=True)
     else:
-        st.markdown(f'<div class="chat-message bot-message">🤖 <strong>Assistant:</strong><br>{message["content"]}</div>', 
-                    unsafe_allow_html=True)
-        
-        # Show images if available
+        st.markdown(f'<div class="chat-message bot-message">🤖 <strong>Assistant:</strong><br>{message["content"]}</div>', unsafe_allow_html=True)
         if "images" in message and message["images"]:
-            st.markdown("### 📸 Relevant Product Images")
-            
-            # Display all images without grouping by source
+            st.markdown("### 📸 Product Images")
             cols = st.columns(4)
             for idx, img_data in enumerate(message["images"]):
                 with cols[idx % 4]:
                     img_bytes = base64.b64decode(img_data['data'])
-                    # Use image name as caption if available, otherwise use page number
                     caption = img_data.get('name', f"Page {img_data.get('page', '?')}")
-                    st.image(img_bytes, caption=caption, 
-                              use_container_width=True, output_format="PNG")
+                    st.image(img_bytes, caption=caption, use_container_width=True, output_format="PNG")
 
 # Chat input
 user_query = st.chat_input("Ask anything...")
 
 if user_query:
-    # Add user message
     st.session_state.messages.append({"role": "user", "content": user_query})
+    save_message_to_db(st.session_state.current_session_id, "user", user_query)
     
-    # Query database
-    with st.spinner("🔍 Searching and synthesizing information..."):
+    # Auto-rename session after first message
+    if len(st.session_state.messages) == 1:
+        auto_rename_session_from_first_message(st.session_state.current_session_id)
+    
+    with st.spinner("🔍 Searching..."):
         result = query_gemini_comprehensive(user_query, st.session_state.product_database, st.session_state.image_database)
-        
-        # Add assistant message
-        assistant_message = {
-            "role": "assistant",
-            "content": result['answer']
-        }
-        
+        assistant_message = {"role": "assistant", "content": result['answer']}
         if result['relevant_images']:
             assistant_message["images"] = result['relevant_images']
-        
         st.session_state.messages.append(assistant_message)
-    
+        save_message_to_db(st.session_state.current_session_id, "assistant", result['answer'], result.get('relevant_images'))
     st.rerun()
 
-# Sidebar - Model Index
+# Sidebar
 with st.sidebar:
-    st.title("📚 Product Index")
+    st.title("💬 Chat Sessions")
+    
+    # New Chat Button
+    if st.button("➕ New Chat", use_container_width=True, type="primary"):
+        new_session_id = create_new_chat_session(st.session_state.username)
+        if new_session_id:
+            st.session_state.current_session_id = new_session_id
+            st.session_state.messages = []
+            try:
+                model = genai.GenerativeModel(st.session_state.working_model)
+                st.session_state.chat_session = model.start_chat(history=[])
+            except:
+                pass
+            st.rerun()
+    
     st.markdown("---")
     
-    if st.session_state.models_index:
-        st.markdown(f"**{len(st.session_state.models_index)} Models Available**")
+    # Load all sessions
+    sessions = get_user_sessions(st.session_state.username)
+    
+    if not sessions:
+        st.info("No chats yet. Start a new one!")
+    else:
+        st.markdown(f"**{len(sessions)} Chat(s)**")
         
-        # Group models by category
+        for session in sessions:
+            is_current = (session['id'] == st.session_state.current_session_id)
+            
+            with st.container():
+                col1, col2, col3 = st.columns([6, 3, 3])
+                
+                with col1:
+                    button_label = f"{'🟢 ' if is_current else ''} {session['name']}"
+                    if st.button(button_label, key=f"sess_{session['id']}", use_container_width=True, type="secondary" if is_current else "tertiary"):
+                        st.session_state.current_session_id = session['id']
+                        st.session_state.messages = load_session_messages(session['id'])
+                        try:
+                            model = genai.GenerativeModel(st.session_state.working_model)
+                            st.session_state.chat_session = model.start_chat(history=[])
+                        except:
+                            pass
+                        st.rerun()
+                
+                with col2:
+                    if st.button("✏️", key=f"edit_{session['id']}"):
+                        st.session_state[f'editing_{session["id"]}'] = True
+                        st.rerun()
+                
+                with col3:
+                    if st.button("🗑️", key=f"del_{session['id']}"):
+                        if session['id'] == st.session_state.current_session_id:
+                            st.warning("Cannot delete current session!")
+                        else:
+                            delete_session_permanently(session['id'])
+                            st.rerun()
+                
+                # Rename form
+                if st.session_state.get(f'editing_{session["id"]}', False):
+                    with st.form(key=f"rename_{session['id']}"):
+                        new_name = st.text_input("New name:", value=session['name'])
+                        col_s, col_c = st.columns(2)
+                        with col_s:
+                            if st.form_submit_button("Save"):
+                                rename_session(session['id'], new_name)
+                                st.session_state[f'editing_{session["id"]}'] = False
+                                st.rerun()
+                        with col_c:
+                            if st.form_submit_button("Cancel"):
+                                st.session_state[f'editing_{session["id"]}'] = False
+                                st.rerun()
+                
+                # st.caption(f"📊 {session['message_count']} messages")
+                st.markdown("<hr style='margin: 5px 0; border: 0.5px solid #ddd;'>", unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Product Index
+    st.title("📚 Product Index")
+    
+    if st.session_state.models_index:
+        st.markdown(f"**{len(st.session_state.models_index)} Models**")
+        
         categories = {}
         for model in st.session_state.models_index.keys():
-            # Determine category
             if 'CW' in model:
                 cat = "Concrete Wash"
             elif 'SP' in model or 'Z' in model or 'MP' in model:
@@ -758,7 +867,6 @@ with st.sidebar:
                 cat = "Pumps"
             else:
                 cat = "Other"
-            
             if cat not in categories:
                 categories[cat] = []
             categories[cat].append(model)
@@ -769,45 +877,46 @@ with st.sidebar:
                     if st.button(model, key=f"model_{model}"):
                         query = f"Tell me everything about {model} including full specifications"
                         st.session_state.messages.append({"role": "user", "content": query})
+                        save_message_to_db(st.session_state.current_session_id, "user", query)
                         st.rerun()
     
     st.markdown("---")
     
-    if st.button("🔄 Reload PDFs Only"):
+    # Admin buttons
+    if st.button("🔄 Reload PDFs"):
         if os.path.exists(DATA_CACHE):
             os.remove(DATA_CACHE)
         st.session_state.product_database = None
-        st.info("PDF cache cleared. Images cache preserved.")
         st.rerun()
     
-    if st.button("🖼️ Reload Images Only"):
+    if st.button("🖼️ Reload Images"):
         if os.path.exists(IMAGE_CACHE):
             os.remove(IMAGE_CACHE)
         st.session_state.image_database = None
-        st.info("Image cache cleared. PDF cache preserved.")
         st.rerun()
     
-    if st.button("🔄 Reload All Data"):
-        if os.path.exists(DATA_CACHE):
-            os.remove(DATA_CACHE)
-        if os.path.exists(IMAGE_CACHE):
-            os.remove(IMAGE_CACHE)
-        st.session_state.product_database = None
-        st.session_state.image_database = None
-        st.info("All caches cleared.")
-        st.rerun()
-    
-    if st.button("🗑️ Clear Chat"):
-        st.session_state.messages = []
-        # Reset the chat session to clear history in the model
-        if 'chat_session' in st.session_state:
-            try:
-                model = genai.GenerativeModel(st.session_state.working_model)
-                st.session_state.chat_session = model.start_chat(history=[])
-            except Exception as e:
-                st.error(f"Could not reset chat session: {e}")
-        st.rerun()
+    if st.button("🗑️ Clear Current Chat"):
+        if len(sessions) > 1:
+            delete_session_permanently(st.session_state.current_session_id)
+            # Switch to another session
+            remaining = [s for s in sessions if s['id'] != st.session_state.current_session_id]
+            if remaining:
+                st.session_state.current_session_id = remaining[0]['id']
+                st.session_state.messages = load_session_messages(remaining[0]['id'])
+        else:
+            # Last session, just clear messages
+            delete_session_permanently(st.session_state.current_session_id)
+            new_session_id = create_new_chat_session(st.session_state.username)
+            st.session_state.current_session_id = new_session_id
+            st.session_state.messages = []
         
+        try:
+            model = genai.GenerativeModel(st.session_state.working_model)
+            st.session_state.chat_session = model.start_chat(history=[])
+        except:
+            pass
+        st.rerun()
+    
     st.markdown("---")
     
     if st.button("➡️ Logout"):
@@ -817,6 +926,6 @@ with st.sidebar:
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666;'>
-    <small>💡 Ask detailed questions like: "What are the complete specifications for CW 10?" or "Compare all batching plant models"</small>
+    <small>💡 Ask detailed questions like: "What are the complete specifications for CW 10?"</small>
 </div>
 """, unsafe_allow_html=True)
