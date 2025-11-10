@@ -631,38 +631,162 @@ def find_relevant_content(query, database, image_database):
     
     return relevant_data
 
+def extract_query_intent(query):
+    """Extract key information from the query for better matching"""
+    intent_info = {
+        'query_type': 'general',
+        'key_terms': [],
+        'is_comparison': False,
+        'is_specification': False,
+        'asks_about_height': False,
+        'asks_about_reach': False
+    }
+    
+    query_lower = query.lower()
+    
+    # Detect query type
+    if any(word in query_lower for word in ['compare', 'difference', 'vs', 'versus', 'better']):
+        intent_info['query_type'] = 'comparison'
+        intent_info['is_comparison'] = True
+    elif any(word in query_lower for word in ['specification', 'specs', 'details', 'features', 'capacity']):
+        intent_info['query_type'] = 'specification'
+        intent_info['is_specification'] = True
+    elif any(word in query_lower for word in ['recommend', 'suggest', 'best', 'which', 'should i']):
+        intent_info['query_type'] = 'recommendation'
+    elif any(word in query_lower for word in ['how', 'what is', 'explain', 'tell me about']):
+        intent_info['query_type'] = 'explanation'
+    
+    # Detect specific specification queries
+    if any(word in query_lower for word in ['height', 'tall', 'high']):
+        intent_info['asks_about_height'] = True
+    if any(word in query_lower for word in ['reach', 'vertical reach', 'max reach']):
+        intent_info['asks_about_reach'] = True
+    
+    # Extract key terms
+    common_words = {'what', 'which', 'where', 'when', 'about', 'tell', 'give', 'show', 'provide', 'need', 'want', 'like', 'have', 'this', 'that', 'with', 'from', 'they'}
+    words = [word.strip('.,!?') for word in query_lower.split() if len(word) > 3 and word not in common_words]
+    intent_info['key_terms'] = list(set(words))
+    
+    return intent_info
+
 def create_comprehensive_prompt(query, relevant_data, database):
-    prompt = f"""You are an expert product assistant for Aquarius Engineers.
+    # Extract query intent for better understanding
+    intent = extract_query_intent(query)
+    
+    prompt = f"""You are an expert product assistant for Aquarius Engineers, a construction equipment company.
+You have access to complete product catalogs and must provide COMPREHENSIVE, DETAILED answers.
 
-User Question: {query}
+========================================
+PHASE 1: UNDERSTAND THE QUERY
+========================================
+User Question: "{query}"
 
-INSTRUCTIONS:
-1. Provide COMPLETE information
-2. Include ALL specifications when discussing models
-3. Format specifications in clear tables
-4. DO NOT mention page numbers or sources
-5. Be thorough and detailed
+Query Analysis:
+- Query Type: {intent['query_type'].upper()}
+- Key Terms: {', '.join(intent['key_terms'])}
+- Is Comparison: {'YES' if intent['is_comparison'] else 'NO'}
+- Is Specification Request: {'YES' if intent['is_specification'] else 'NO'}
+
+CRITICAL SPECIFICATION GUIDELINES:
+"""
+    
+    # Add specific guidelines based on query intent
+    if intent['asks_about_height'] or intent['asks_about_reach']:
+        prompt += """
+⚠️ IMPORTANT - HEIGHT/REACH SPECIFICATION:
+When asked about "height", "maximum height", "how tall", or "reach":
+- ALWAYS refer to "VERTICAL REACH" or "MAX VERTICAL REACH" specification
+- DO NOT confuse with "Overall Height", "Transport Height", "Folded Height", or "Machine Height"
+- If vertical reach is not available, clearly state that and only then mention other height measurements
+- Format: "Vertical Reach: [value] meters" or "Maximum Vertical Reach: [value] meters"
 
 """
+    
+    prompt += """
+SPECIFICATION ACCURACY RULES:
+1. **Capacity** - Always refer to "Working Capacity" or "Rated Capacity", not tank capacity or hopper capacity unless specifically asked
+2. **Height** - ONLY use "Vertical Reach" for height questions, NOT overall dimensions
+3. **Width** - Use "Working Width" for operational width, "Transport Width" for dimensions
+4. **Weight** - Use "Operating Weight" for machine weight questions
+5. **Power** - Use "Engine Power" or "Motor Power" for power questions
+6. **Output** - Use "Output per Cycle" or "Production Capacity" for output questions
+
+RESPONSE INSTRUCTIONS:
+1. Match the EXACT specification being asked for
+2. Provide COMPLETE information detailed, not summaries
+3. Include ALL relevant specifications in clear tables
+4. Format numbers with proper units (meters, kg, liters, etc.)
+5. DO NOT mention page numbers, document sources, or say "according to the documentation"
+6. Be thorough but ACCURATE - don't mix up different types of specifications
+7. If unsure about which specification is being asked, provide the most relevant one clearly labeled
+8. If asked about a model then give all the features and specification of that model from relevant pdf in detail
+
+========================================
+PHASE 2: RELEVANT PRODUCT DOCUMENTATION
+========================================
+"""
+    
+    # Add model-specific data
     if relevant_data['models']:
-        prompt += "\n\n=== MODEL INFORMATION ===\n"
+        prompt += f"\n📋 SPECIFIC MODEL DATA ({len(relevant_data['models'])} model(s) found):\n"
+        prompt += "=" * 80 + "\n"
         for model_info in relevant_data['models']:
-            prompt += f"\n--- {model_info['model']} ---\n"
+            prompt += f"\n🔹 Model: {model_info['model']}\n"
+            prompt += "-" * 80 + "\n"
             for data in model_info['data'][:3]:
-                prompt += f"\n{data['context']}\n\n"
+                prompt += f"{data['context']}\n\n"
     
+    # Add relevant text sections
     if relevant_data['text_sections']:
-        prompt += "\n\n=== DOCUMENTATION ===\n"
-        for section in relevant_data['text_sections'][:15]:
-            prompt += f"\n{section['content']}\n"
+        prompt += f"\n📄 RELEVANT DOCUMENTATION ({len(relevant_data['text_sections'])} section(s)):\n"
+        prompt += "=" * 80 + "\n"
+        for idx, section in enumerate(relevant_data['text_sections'][:15], 1):
+            prompt += f"\n[Section {idx}]\n{section['content']}\n"
     
+    # Add table data
     if relevant_data['tables']:
-        prompt += "\n\n=== TABLES ===\n"
-        for table in relevant_data['tables'][:5]:
-            prompt += f"\n{json.dumps(table['data'])}\n"
+        prompt += f"\n📊 SPECIFICATION TABLES ({len(relevant_data['tables'])} table(s)):\n"
+        prompt += "=" * 80 + "\n"
+        for idx, table in enumerate(relevant_data['tables'][:5], 1):
+            table_json = json.dumps(table['data'])
+            prompt += f"\n[Table {idx}]\n{table_json}\n"
     
-    prompt += f"\n\n=== GENERAL INFO ===\n{database['full_text'][:5000]}\n"
-    prompt += "\nProvide a COMPREHENSIVE answer.\n\nAnswer:"
+    # Add general context if needed
+    if not relevant_data['models'] and not relevant_data['text_sections']:
+        prompt += f"\n📚 GENERAL PRODUCT CATALOG:\n"
+        prompt += "=" * 80 + "\n"
+        prompt += f"{database['full_text'][:5000]}\n"
+    
+    prompt += """
+
+========================================
+PHASE 3: PROVIDE YOUR ANSWER
+========================================
+
+Now provide a comprehensive, accurate answer that:
+
+✓ DIRECTLY answers what was asked (match the exact specification)
+✓ Uses ONLY the correct specifications from documentation
+✓ Presents data in clear, organized TABLES for specifications
+✓ Includes ALL relevant technical details with proper units
+✓ Is formatted professionally and easy to read
+
+✗ DO NOT mention sources, page numbers, or documentation references
+✗ DO NOT confuse different types of specifications (e.g., vertical reach vs overall height)
+✗ DO NOT provide summaries when full details are available
+
+"""
+    
+    # Add specific reminders based on query
+    if intent['is_comparison']:
+        prompt += "\n⚡ COMPARISON QUERY: Provide side-by-side comparison table with all key differences.\n"
+    elif intent['is_specification']:
+        prompt += "\n⚡ SPECIFICATION QUERY: Provide complete technical specifications in detailed table format.\n"
+    if intent['asks_about_height'] or intent['asks_about_reach']:
+        prompt += "\n⚡ HEIGHT QUERY: Remember to use VERTICAL REACH specification only!\n"
+    
+    prompt += "\nYour Professional Answer:\n"
+    
     return prompt
 
 def query_gemini_comprehensive(query, database, image_database):
